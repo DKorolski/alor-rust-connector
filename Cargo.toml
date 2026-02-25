@@ -1,0 +1,19 @@
+[package]
+name = "alor_rust"
+version = "0.1.1"
+edition = "2021"
+
+[dependencies]
+chrono = "0.4.40"
+chrono-tz = "0.10.3"
+reqwest = { version = "0.12.15", features = ["blocking", "stream", "json"] }
+log = "0.4.26"
+env_logger = "0.11.7"
+serde_json = "1.0.140"
+base64 = "0.22.1"
+serde = { version = "1.0.219", features = ["derive"] }
+tokio = { version = "1.42.0", features = ["rt", "rt-multi-thread", "macros"] }
+tokio-tungstenite = { version = "0.26.2", features = ["native-tls"] }
+futures-util = "0.3.31"
+uuid = { version = "1.16.0", features = ["v4"] }
+anyhow = "1.0.100"
