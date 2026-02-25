@@ -1,3 +1,4 @@
+use serde::Deserialize;
 use serde_json::Value;
 use std::fmt;
 
@@ -13,6 +14,22 @@ pub struct CwsAckEvent {
 impl fmt::Display for CwsAckEvent {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.raw)
+    }
+}
+
+impl CwsAckEvent {
+    pub fn from_raw(raw: Value) -> Self {
+        let parsed = serde_json::from_value::<WireCwsAck>(raw.clone()).ok();
+        Self {
+            http_code: parsed.as_ref().and_then(|p| p.http_code),
+            message: parsed.as_ref().and_then(|p| p.message.clone()),
+            request_guid: parsed.as_ref().and_then(|p| p.request_guid.clone()),
+            order_number: parsed
+                .as_ref()
+                .and_then(|p| p.order_number.as_ref())
+                .and_then(value_to_string),
+            raw,
+        }
     }
 }
 
@@ -32,3 +49,58 @@ impl fmt::Display for WsOrderStatusEvent {
     }
 }
 
+impl WsOrderStatusEvent {
+    pub fn from_raw(raw: Value) -> Self {
+        let parsed = serde_json::from_value::<WireWsOrderStatusEnvelope>(raw.clone()).ok();
+        let data = parsed.as_ref().and_then(|p| p.data.as_ref());
+        Self {
+            guid: parsed
+                .as_ref()
+                .and_then(|p| p.guid.clone().or_else(|| p.request_guid.clone())),
+            order_id: data.and_then(|d| d.id.as_ref()).and_then(value_to_string),
+            status: data
+                .and_then(|d| d.status.as_ref())
+                .map(|s| s.to_lowercase()),
+            portfolio: data.and_then(|d| d.portfolio.clone()),
+            symbol: data.and_then(|d| d.symbol.clone()),
+            raw,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct WireCwsAck {
+    #[serde(rename = "httpCode")]
+    http_code: Option<u64>,
+    message: Option<String>,
+    #[serde(rename = "requestGuid")]
+    request_guid: Option<String>,
+    #[serde(rename = "orderNumber")]
+    order_number: Option<Value>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct WireWsOrderStatusEnvelope {
+    guid: Option<String>,
+    #[serde(rename = "requestGuid")]
+    request_guid: Option<String>,
+    data: Option<WireWsOrderStatusData>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct WireWsOrderStatusData {
+    id: Option<Value>,
+    status: Option<String>,
+    portfolio: Option<String>,
+    symbol: Option<String>,
+}
+
+fn value_to_string(v: &Value) -> Option<String> {
+    if v.is_string() {
+        v.as_str().map(|s| s.to_string())
+    } else if v.is_number() {
+        Some(v.to_string())
+    } else {
+        None
+    }
+}

@@ -595,6 +595,75 @@ impl AlorRust {
         Ok(subscribe_guid)
     }
 
+    pub async fn subscribe_orders_statuses_v2_and_wait_ack(
+        &mut self,
+        ws_rx: &mut broadcast::Receiver<Value>,
+        exchange: &str,
+        portfolio: &str,
+        order_statuses: Option<Vec<String>>,
+        skip_history: bool,
+        frequency: i32,
+        format: &str,
+        timeout_duration: Duration,
+    ) -> anyhow::Result<(Uuid, Value)> {
+        let subscribe_guid = self
+            .subscribe_orders_statuses_v2(
+                exchange,
+                portfolio,
+                order_statuses,
+                skip_history,
+                frequency,
+                format,
+            )
+            .await?;
+        let subscribe_guid_s = subscribe_guid.to_string();
+
+        let ack = match Self::wait_ws_event_by_guid(ws_rx, &subscribe_guid_s, Duration::from_secs(1)).await {
+            Ok(evt) => evt,
+            Err(_) => {
+                let fut = async {
+                    loop {
+                        match ws_rx.recv().await {
+                            Ok(event) => {
+                                let top_guid_match =
+                                    Self::ws_event_guid(&event).as_deref() == Some(&subscribe_guid_s);
+                                let data_guid_match = event
+                                    .get("data")
+                                    .and_then(|d| d.get("guid"))
+                                    .and_then(|v| v.as_str())
+                                    .map(|g| g == subscribe_guid_s)
+                                    .unwrap_or(false);
+                                let request_guid_match = event
+                                    .get("requestGuid")
+                                    .and_then(|v| v.as_str())
+                                    .map(|g| g == subscribe_guid_s)
+                                    .unwrap_or(false);
+                                let http_ok = event
+                                    .get("httpCode")
+                                    .and_then(|v| v.as_u64())
+                                    .map(|code| code == 200)
+                                    .unwrap_or(false);
+
+                                if top_guid_match || data_guid_match || request_guid_match || http_ok {
+                                    return Ok(event);
+                                }
+                            }
+                            Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                            Err(broadcast::error::RecvError::Closed) => {
+                                return Err(anyhow!("WS event stream closed"));
+                            }
+                        }
+                    }
+                };
+                timeout(timeout_duration, fut)
+                    .await
+                    .map_err(|_| anyhow!("Timeout waiting for OrdersGetAndSubscribeV2 ack"))??
+            }
+        };
+
+        Ok((subscribe_guid, ack))
+    }
+
     pub fn subscribe_ws_events(&self) -> broadcast::Receiver<Value> {
         self.client.socket_client.subscribe_events()
     }
@@ -626,16 +695,7 @@ impl AlorRust {
     }
 
     pub fn parse_cws_ack_event(event: Value) -> CwsAckEvent {
-        CwsAckEvent {
-            http_code: Self::cws_http_code(&event),
-            message: event
-                .get("message")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string()),
-            request_guid: Self::cws_request_guid(&event),
-            order_number: Self::cws_order_number(&event),
-            raw: event,
-        }
+        CwsAckEvent::from_raw(event)
     }
 
     pub fn ws_event_guid(event: &Value) -> Option<String> {
@@ -666,21 +726,7 @@ impl AlorRust {
     }
 
     pub fn parse_ws_order_status_event(event: Value) -> WsOrderStatusEvent {
-        let data = event.get("data");
-        WsOrderStatusEvent {
-            guid: Self::ws_event_guid(&event),
-            order_id: Self::ws_order_status_id(&event),
-            status: Self::ws_order_status(&event),
-            portfolio: data
-                .and_then(|d| d.get("portfolio"))
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string()),
-            symbol: data
-                .and_then(|d| d.get("symbol"))
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string()),
-            raw: event,
-        }
+        WsOrderStatusEvent::from_raw(event)
     }
 
     pub async fn wait_cws_event_by_request_guid(
@@ -1188,7 +1234,7 @@ pub fn init_logger(level: &str) {
 #[cfg(test)]
 mod tests {
     use super::helpers::servers::get_server_url;
-    use super::AlorRust;
+    use super::{AlorRust, CwsAckEvent, WsOrderStatusEvent};
     use serde_json::json;
 
     #[test]
@@ -1230,6 +1276,42 @@ mod tests {
     fn cws_http_code_extracts_value() {
         let event = json!({ "httpCode": 400 });
         assert_eq!(AlorRust::cws_http_code(&event), Some(400));
+    }
+
+    #[test]
+    fn cws_ack_event_from_raw_parses_fields() {
+        let raw = json!({
+            "httpCode": 200,
+            "message": "ok",
+            "requestGuid": "req-123",
+            "orderNumber": "42"
+        });
+        let evt = CwsAckEvent::from_raw(raw.clone());
+        assert_eq!(evt.http_code, Some(200));
+        assert_eq!(evt.message.as_deref(), Some("ok"));
+        assert_eq!(evt.request_guid.as_deref(), Some("req-123"));
+        assert_eq!(evt.order_number.as_deref(), Some("42"));
+        assert_eq!(evt.raw, raw);
+    }
+
+    #[test]
+    fn ws_order_status_event_from_raw_parses_fields() {
+        let raw = json!({
+            "guid": "sub-1",
+            "data": {
+                "id": "2033125999100562015",
+                "status": "working",
+                "portfolio": "7502T0U",
+                "symbol": "IMOEXF"
+            }
+        });
+        let evt = WsOrderStatusEvent::from_raw(raw.clone());
+        assert_eq!(evt.guid.as_deref(), Some("sub-1"));
+        assert_eq!(evt.order_id.as_deref(), Some("2033125999100562015"));
+        assert_eq!(evt.status.as_deref(), Some("working"));
+        assert_eq!(evt.portfolio.as_deref(), Some("7502T0U"));
+        assert_eq!(evt.symbol.as_deref(), Some("IMOEXF"));
+        assert_eq!(evt.raw, raw);
     }
 
     #[test]

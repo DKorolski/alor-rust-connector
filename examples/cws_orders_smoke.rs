@@ -1,9 +1,8 @@
 use alor_rust::dto::cws_dto::order_common::{OrderSide, TimeInForce};
 use alor_rust::*;
 use anyhow::{anyhow, Result};
-use log::{debug, info, warn};
+use log::{debug, info};
 use serde_json::Value;
-use tokio::sync::broadcast;
 use tokio::time::Duration;
 
 #[tokio::main]
@@ -34,20 +33,19 @@ async fn main() -> Result<()> {
     let mut ws_rx = client.subscribe_ws_events();
     let mut cws_rx = client.subscribe_cws_events();
 
-    let subscribe_guid = client
-        .subscribe_orders_statuses_v2(&exchange, &portfolio, None, true, 0, "Simple")
+    let (subscribe_guid, subscribe_evt) = client
+        .subscribe_orders_statuses_v2_and_wait_ack(
+            &mut ws_rx,
+            &exchange,
+            &portfolio,
+            None,
+            true,
+            0,
+            "Simple",
+            Duration::from_secs(5),
+        )
         .await?;
     let subscribe_guid_s = subscribe_guid.to_string();
-    let subscribe_evt = AlorRust::wait_ws_event_by_guid(
-        &mut ws_rx,
-        &subscribe_guid_s,
-        Duration::from_secs(1),
-    )
-    .await;
-    let subscribe_evt = match subscribe_evt {
-        Ok(evt) => evt,
-        Err(_) => wait_ws_subscribe_ack(&mut ws_rx, &subscribe_guid_s, Duration::from_secs(5)).await?,
-    };
     info!("OrdersGetAndSubscribeV2 ack/event: {}", subscribe_evt);
 
     // create
@@ -140,56 +138,6 @@ async fn main() -> Result<()> {
     }
 
     Ok(())
-}
-
-async fn wait_ws_subscribe_ack(
-    rx: &mut broadcast::Receiver<Value>,
-    subscribe_guid: &str,
-    timeout_duration: Duration,
-) -> Result<Value> {
-    let fut = async {
-        loop {
-            match rx.recv().await {
-                Ok(event) => {
-                    let top_guid_match =
-                        AlorRust::ws_event_guid(&event).as_deref() == Some(subscribe_guid);
-                    let data_guid_match = event
-                        .get("data")
-                        .and_then(|d| d.get("guid"))
-                        .and_then(|v| v.as_str())
-                        .map(|g| g == subscribe_guid)
-                        .unwrap_or(false);
-                    let request_guid_match = event
-                        .get("requestGuid")
-                        .and_then(|v| v.as_str())
-                        .map(|g| g == subscribe_guid)
-                        .unwrap_or(false);
-                    let http_ok = event
-                        .get("httpCode")
-                        .and_then(|v| v.as_u64())
-                        .map(|code| code == 200)
-                        .unwrap_or(false);
-
-                    if top_guid_match || data_guid_match || request_guid_match || http_ok {
-                        return Ok(event);
-                    }
-
-                    debug!("Skipping WS event while waiting subscribe ack: {}", event);
-                }
-                Err(broadcast::error::RecvError::Lagged(n)) => {
-                    warn!("WS receiver lagged by {} events while waiting subscribe ack", n);
-                    continue;
-                }
-                Err(broadcast::error::RecvError::Closed) => {
-                    return Err(anyhow!("WS broadcast stream closed"));
-                }
-            }
-        }
-    };
-
-    tokio::time::timeout(timeout_duration, fut)
-        .await
-        .map_err(|_| anyhow!("Timeout waiting for OrdersGetAndSubscribeV2 ack"))?
 }
 
 fn log_ws_event(event: &Value) {
