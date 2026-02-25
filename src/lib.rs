@@ -580,7 +580,11 @@ impl AlorRust {
     }
 
     pub fn ws_event_guid(event: &Value) -> Option<String> {
-        event.get("guid").and_then(|v| v.as_str()).map(|s| s.to_string())
+        event
+            .get("guid")
+            .or_else(|| event.get("requestGuid"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
     }
 
     pub fn ws_order_status_id(event: &Value) -> Option<String> {
