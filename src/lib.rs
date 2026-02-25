@@ -1149,3 +1149,63 @@ pub fn init_logger(level: &str) {
     std::env::set_var("RUST_LOG", level);
     let _ = env_logger::try_init();
 }
+
+#[cfg(test)]
+mod tests {
+    use super::helpers::servers::get_server_url;
+    use super::AlorRust;
+    use serde_json::json;
+
+    #[test]
+    fn ws_event_guid_reads_guid() {
+        let event = json!({ "guid": "abc-123" });
+        assert_eq!(AlorRust::ws_event_guid(&event).as_deref(), Some("abc-123"));
+    }
+
+    #[test]
+    fn ws_event_guid_falls_back_to_request_guid() {
+        let event = json!({ "requestGuid": "req-1" });
+        assert_eq!(AlorRust::ws_event_guid(&event).as_deref(), Some("req-1"));
+    }
+
+    #[test]
+    fn cws_order_number_reads_string_and_number() {
+        let s = json!({ "orderNumber": "42" });
+        let n = json!({ "orderNumber": 42 });
+        assert_eq!(AlorRust::cws_order_number(&s).as_deref(), Some("42"));
+        assert_eq!(AlorRust::cws_order_number(&n).as_deref(), Some("42"));
+    }
+
+    #[test]
+    fn ws_order_status_extracts_id_and_status() {
+        let event = json!({
+            "data": {
+                "id": "2033125999100562015",
+                "status": "working"
+            }
+        });
+        assert_eq!(
+            AlorRust::ws_order_status_id(&event).as_deref(),
+            Some("2033125999100562015")
+        );
+        assert_eq!(AlorRust::ws_order_status(&event).as_deref(), Some("working"));
+    }
+
+    #[test]
+    fn cws_http_code_extracts_value() {
+        let event = json!({ "httpCode": 400 });
+        assert_eq!(AlorRust::cws_http_code(&event), Some(400));
+    }
+
+    #[test]
+    fn server_urls_switch_between_demo_and_prod() {
+        assert_eq!(
+            get_server_url("api_server", false).unwrap(),
+            "https://api.alor.ru"
+        );
+        assert_eq!(
+            get_server_url("api_server", true).unwrap(),
+            "https://apidev.alor.ru"
+        );
+    }
+}

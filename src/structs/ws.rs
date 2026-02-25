@@ -61,9 +61,15 @@ impl WebSocketState {
                                                 prev_bar = Some(api_response);
                                                 continue;
                                             } else {
-                                                let prev_bar_data = prev_bar.clone().unwrap();
+                                                let Some(prev_bar_data) = prev_bar.clone() else {
+                                                    prev_bar = Some(api_response);
+                                                    continue;
+                                                };
 
-                                                let current_bar_secconds = current_bar_seconds.unwrap();
+                                                let Some(current_bar_secconds) = current_bar_seconds else {
+                                                    callback(&api_response);
+                                                    continue;
+                                                };
                                                 let prev_bar_secconds = prev_bar_data
                                                     .get("data")
                                                     .and_then(|d| d.get("time"))
@@ -80,7 +86,7 @@ impl WebSocketState {
                                                 } else if current_bar_secconds > prev_bar_secconds {
                                                     debug!("websocket_handler: OnNewBar {:?}", prev_bar_data);
                                                     // raise callback on previous bar
-                                                    callback(&prev_bar.unwrap());
+                                                    callback(&prev_bar_data);
                                                     // set current bar as previous bar
                                                     prev_bar = Some(api_response);
                                                 }
