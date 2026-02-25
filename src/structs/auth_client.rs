@@ -10,7 +10,6 @@ use reqwest::Url;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::env;
-use std::error::Error as StdError;
 
 use anyhow::{anyhow, Result};
 
@@ -46,7 +45,7 @@ impl AuthClient {
         })
     }
 
-    pub async fn get_jwt_token(&mut self) -> Result<String, Box<dyn StdError>> {
+    pub async fn get_jwt_token(&mut self) -> Result<String> {
         let now = Utc::now().timestamp();
 
         if (self.token_data.token.is_none())
@@ -67,7 +66,7 @@ impl AuthClient {
             //     // todo: remove raw_response and add validate response;
             //     let response_text = response.text().await?;
             //     let response_json: Value = serde_json::from_str(&*response_text)?;
-            //     let token = response_json["AccessToken"].as_str().unwrap().to_string();
+            //     let token = response_json["AccessToken"].as_str()?.to_string();
             //     self.token_data.raw_response = Some(response_text);
             //     self.token_data.token = Some(token.clone());
             //     self.token_data.token_decoded = Some(self.decode_token(token)?);
@@ -82,13 +81,10 @@ impl AuthClient {
             // }
         }
 
-        self.token_data.raw_response.clone().ok_or_else(|| {
-            std::io::Error::new(
-                std::io::ErrorKind::Other,
-                "JWT token refresh returned no raw response",
-            )
-            .into()
-        })
+        self.token_data
+            .raw_response
+            .clone()
+            .ok_or_else(|| anyhow!("JWT token refresh returned no raw response"))
     }
 
     pub async fn get_jwt_token_force(&mut self) -> Result<String> {

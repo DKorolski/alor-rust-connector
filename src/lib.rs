@@ -6,7 +6,6 @@ use log::{debug, info};
 use reqwest::header::{HeaderMap, HeaderValue};
 use reqwest::Url;
 use serde_json::{Number, Value};
-use std::error::Error as StdError;
 use std::io;
 use tokio::task::JoinHandle;
 use tokio::sync::broadcast;
@@ -97,8 +96,7 @@ impl AlorRust {
 
         api.auth_client
             .get_jwt_token()
-            .await
-            .map_err(|e| anyhow!(e.to_string()))?;
+            .await?;
 
         Ok(api)
     }
@@ -109,8 +107,7 @@ impl AlorRust {
         let jwt_raw = self
             .auth_client
             .get_jwt_token()
-            .await
-            .map_err(|e| anyhow!(e.to_string()))?;
+            .await?;
         let data_json: Value = serde_json::from_str(jwt_raw.as_str())?;
 
         let mut headers = HeaderMap::new();
@@ -271,7 +268,7 @@ impl AlorRust {
         untraded: bool,
         format: &str,
         block_size: i64,
-    ) -> Result<Value, Box<dyn StdError>> {
+    ) -> Result<Value> {
         debug!("start get_history");
 
         let exchange_string = exchange.to_string();
@@ -279,9 +276,7 @@ impl AlorRust {
         let format_string = format.to_string();
         let client = reqwest::Client::new();
         let url = self.client.api_server.join("/md/v2/history")?;
-        let headers = self.get_headers_vec().await.map_err(|e| -> Box<dyn StdError> {
-            Box::new(io::Error::new(io::ErrorKind::Other, e.to_string()))
-        })?;
+        let headers = self.get_headers_vec().await?;
 
         let mut result_data = HistoryDataResponse {
             history: vec![],
@@ -397,7 +392,7 @@ impl AlorRust {
         symbol: &str,
         instrument_group: Option<String>,
         format: &str,
-    ) -> Result<Value, Box<dyn StdError>> {
+    ) -> Result<Value> {
         debug!("start get symbol");
         let mut params = vec![("format", format)];
 
@@ -414,9 +409,7 @@ impl AlorRust {
                     .join(format!("/md/v2/Securities/{}/{}", exchange, symbol).as_str())
                     ?,
             )
-            .headers(self.get_headers_vec().await.map_err(|e| -> Box<dyn StdError> {
-                Box::new(io::Error::new(io::ErrorKind::Other, e.to_string()))
-            })?)
+            .headers(self.get_headers_vec().await?)
             .query(&params.clone())
             .send()
             .await;
@@ -440,7 +433,7 @@ impl AlorRust {
         exchange: &str,
         symbol: &str,
         reload: bool,
-    ) -> Result<Option<Value>, Box<dyn StdError>> {
+    ) -> Result<Option<Value>> {
         debug!("start get symbol info");
 
         if self
@@ -458,16 +451,14 @@ impl AlorRust {
             .await)
     }
 
-    pub async fn get_server_time(&mut self) -> Result<u64, Box<dyn StdError>> {
+    pub async fn get_server_time(&mut self) -> Result<u64> {
         debug!("start get server time");
 
         let response = self
             .client
             .client
             .get(self.client.api_server.join("/md/v2/time")?)
-            .headers(self.get_headers_vec().await.map_err(|e| -> Box<dyn StdError> {
-                Box::new(io::Error::new(io::ErrorKind::Other, e.to_string()))
-            })?)
+            .headers(self.get_headers_vec().await?)
             .send()
             .await;
         let response_json = self.client.validate_response(response?).await?;
@@ -500,12 +491,11 @@ impl AlorRust {
         skip_history: bool,
         frequency: i32,
         format: &str,
-    ) -> Result<Uuid, Box<dyn StdError>> {
+    ) -> Result<Uuid> {
         let jwt_raw = self
             .auth_client
             .get_jwt_token()
-            .await
-            .map_err(|e| anyhow!(e.to_string()))?;
+            .await?;
         let data_json: Value = serde_json::from_str(jwt_raw.as_str())?;
         let auth_token = data_json
             .get("AccessToken")
@@ -541,8 +531,7 @@ impl AlorRust {
             .socket_client
             .write_stream
             .send(message)
-            .await
-            .map_err(|e| -> Box<dyn StdError> { Box::new(e) })?;
+            .await?;
 
         Ok(subscribe_guid)
     }
@@ -561,8 +550,7 @@ impl AlorRust {
         let jwt_raw = self
             .auth_client
             .get_jwt_token()
-            .await
-            .map_err(|e| anyhow!(e.to_string()))?;
+            .await?;
         let data_json: Value = serde_json::from_str(jwt_raw.as_str())?;
         let auth_token = data_json
             .get("AccessToken")
@@ -1040,7 +1028,7 @@ impl AlorRust {
     pub async fn dataname_to_board_symbol(
         &mut self,
         dataname: &str,
-    ) -> Result<Vec<String>, Box<dyn StdError>> {
+    ) -> Result<Vec<String>> {
         debug!("parse dataname_to_board_symbol");
         let symbol_parts: Vec<&str> = dataname.split('.').collect();
 
@@ -1075,7 +1063,7 @@ impl AlorRust {
         &mut self,
         board: &str,
         symbol: &str,
-    ) -> Result<String, Box<dyn StdError>> {
+    ) -> Result<String> {
         debug!("get exchange by board: {board} and symbol: {symbol}");
         let mut using_board = board.to_string();
 
@@ -1090,16 +1078,16 @@ impl AlorRust {
 
         exchange
             .await
-            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "Exchange not found for board/symbol").into())
+            .ok_or_else(|| anyhow!("Exchange not found for board/symbol"))
     }
 
     pub fn utc_timestamp_to_msk_datetime(
         &self,
         timestamp: i64,
-    ) -> Result<DateTime<Utc>, Box<dyn StdError>> {
+    ) -> Result<DateTime<Utc>> {
         // Convert Unix timestamp to Utc DateTime
         DateTime::from_timestamp(timestamp, 0)
-            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "Invalid unix timestamp").into())
+            .ok_or_else(|| anyhow!("Invalid unix timestamp"))
     }
 
     /// msk_datetime_to_utc_timestamp(date)
@@ -1112,7 +1100,7 @@ impl AlorRust {
     pub fn msk_datetime_to_utc_timestamp(
         &self,
         date: DateTime<Utc>,
-    ) -> Result<u64, Box<dyn StdError>> {
+    ) -> Result<u64> {
         let date_with_tz: DateTime<Tz> = date.with_timezone(&"Europe/Moscow".parse::<Tz>()?);
 
         Ok(date_with_tz.timestamp() as u64)
@@ -1124,7 +1112,7 @@ impl AlorRust {
         &mut self,
         board: &str,
         account_id: i32,
-    ) -> Result<Option<Value>, Box<dyn StdError>> {
+    ) -> Result<Option<Value>> {
         let account = self.auth_client.user_data.find_account(account_id, board);
 
         if let Some(account) = account {
@@ -1134,7 +1122,7 @@ impl AlorRust {
         Ok(None)
     }
 
-    pub fn accounts(&self) -> Result<Vec<Value>, Box<dyn StdError>> {
+    pub fn accounts(&self) -> Result<Vec<Value>> {
         let mut result = vec![];
 
         for account in self.auth_client.user_data.accounts.iter() {
