@@ -41,6 +41,20 @@ let mut client = AlorRust::new(
 ).await?;
 ```
 
+Также доступны более удобные entry points (старт Итерации 3):
+
+```rust
+// no-op callbacks по умолчанию
+let client = AlorRust::new_default_callbacks(refresh_token, false).await?;
+
+// builder / config style
+let client = AlorRust::builder(refresh_token)
+    .demo(false)
+    .preload_jwt(true)
+    .build()
+    .await?;
+```
+
 Параметры:
 
 - `refresh_token: &str` - refresh token Alor
@@ -173,6 +187,18 @@ let _delete = client
 - подтверждает сценарий create -> update -> delete с получением ID из `OrdersGetAndSubscribeV2`.
 
 ## Конфигурация и переменные окружения
+
+### Новый конфиг (старт Итерации 3)
+
+Добавлены:
+
+- `AlorConfig`
+- `AlorClientBuilder`
+- `AlorRust::from_config(...)`
+
+Это позволяет централизованно задавать `demo`, callbacks и поведение preload JWT.
+
+Примечание: поля `enable_ws` / `enable_cws` уже добавлены в конфиг как подготовка к `REST-only`/lazy init, но их выключение пока возвращает явную ошибку (режим еще не реализован).
 
 ### Обязательное для работы
 

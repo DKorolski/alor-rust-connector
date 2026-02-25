@@ -48,6 +48,79 @@ pub use dto::events::{CwsAckEvent, WsOrderStatusEvent, WsSubscribeAckEvent};
 
 use anyhow::{anyhow, Result};
 
+fn noop_json_callback(_: &Value) {}
+
+#[derive(Clone, Copy)]
+pub struct AlorConfig {
+    pub demo: bool,
+    pub ws_callback: fn(&Value),
+    pub cws_callback: fn(&Value),
+    pub enable_ws: bool,
+    pub enable_cws: bool,
+    pub preload_jwt: bool,
+}
+
+impl Default for AlorConfig {
+    fn default() -> Self {
+        Self {
+            demo: false,
+            ws_callback: noop_json_callback,
+            cws_callback: noop_json_callback,
+            enable_ws: true,
+            enable_cws: true,
+            preload_jwt: true,
+        }
+    }
+}
+
+pub struct AlorClientBuilder {
+    refresh_token: String,
+    config: AlorConfig,
+}
+
+impl AlorClientBuilder {
+    pub fn new(refresh_token: impl Into<String>) -> Self {
+        Self {
+            refresh_token: refresh_token.into(),
+            config: AlorConfig::default(),
+        }
+    }
+
+    pub fn demo(mut self, demo: bool) -> Self {
+        self.config.demo = demo;
+        self
+    }
+
+    pub fn ws_callback(mut self, callback: fn(&Value)) -> Self {
+        self.config.ws_callback = callback;
+        self
+    }
+
+    pub fn cws_callback(mut self, callback: fn(&Value)) -> Self {
+        self.config.cws_callback = callback;
+        self
+    }
+
+    pub fn enable_ws(mut self, enabled: bool) -> Self {
+        self.config.enable_ws = enabled;
+        self
+    }
+
+    pub fn enable_cws(mut self, enabled: bool) -> Self {
+        self.config.enable_cws = enabled;
+        self
+    }
+
+    pub fn preload_jwt(mut self, enabled: bool) -> Self {
+        self.config.preload_jwt = enabled;
+        self
+    }
+
+    pub async fn build(self) -> Result<AlorRust> {
+        AlorRust::from_config(&self.refresh_token, self.config).await
+    }
+}
+
 /// Formats the sum of two numbers as string.
 pub struct AlorRust {
     pub client: ApiClient,
@@ -82,25 +155,59 @@ pub struct UpdateLimitOrderFlowResult {
 }
 
 impl AlorRust {
+    pub fn builder(refresh_token: impl Into<String>) -> AlorClientBuilder {
+        AlorClientBuilder::new(refresh_token)
+    }
+
+    pub async fn new_default_callbacks(refresh_token: &str, demo: bool) -> Result<Self> {
+        Self::from_config(
+            refresh_token,
+            AlorConfig {
+                demo,
+                ..AlorConfig::default()
+            },
+        )
+        .await
+    }
+
+    pub async fn from_config(refresh_token: &str, config: AlorConfig) -> Result<Self> {
+        if !config.enable_ws || !config.enable_cws {
+            return Err(anyhow!(
+                "Config flags enable_ws/enable_cws are not supported yet (REST-only/lazy init planned in Iteration 3)"
+            ));
+        }
+
+        info!("Initializing AlorRust, demo status: {}", config.demo);
+
+        let mut api = AlorRust {
+            auth_client: AuthClient::new(refresh_token, config.demo)?,
+            client: ApiClient::new(config.demo, config.ws_callback).await?,
+            cws_client: CWS::new(refresh_token, config.demo, config.cws_callback).await?,
+        };
+
+        if config.preload_jwt {
+            api.auth_client.get_jwt_token().await?;
+        }
+
+        Ok(api)
+    }
+
     pub async fn new(
         refresh_token: &str,
         demo: bool,
         ws_callback: fn(&Value),
         cws_callback: fn(&Value),
     ) -> Result<Self> {
-        info!("Initializing AlorRust, demo status: {demo}");
-
-        let mut api = AlorRust {
-            auth_client: AuthClient::new(refresh_token, demo)?,
-            client: ApiClient::new(demo, ws_callback).await?,
-            cws_client: CWS::new(refresh_token, demo, cws_callback).await?,
-        };
-
-        api.auth_client
-            .get_jwt_token()
-            .await?;
-
-        Ok(api)
+        Self::from_config(
+            refresh_token,
+            AlorConfig {
+                demo,
+                ws_callback,
+                cws_callback,
+                ..AlorConfig::default()
+            },
+        )
+        .await
     }
 
     // internal
@@ -1260,7 +1367,7 @@ pub fn init_logger(level: &str) {
 #[cfg(test)]
 mod tests {
     use super::helpers::servers::get_server_url;
-    use super::{AlorRust, CwsAckEvent, WsOrderStatusEvent, WsSubscribeAckEvent};
+    use super::{AlorClientBuilder, AlorConfig, AlorRust, CwsAckEvent, WsOrderStatusEvent, WsSubscribeAckEvent};
     use serde_json::json;
 
     #[test]
@@ -1364,5 +1471,46 @@ mod tests {
             get_server_url("api_server", true).unwrap(),
             "https://apidev.alor.ru"
         );
+    }
+
+    #[test]
+    fn alor_config_defaults_are_safe() {
+        let cfg = AlorConfig::default();
+        assert!(!cfg.demo);
+        assert!(cfg.enable_ws);
+        assert!(cfg.enable_cws);
+        assert!(cfg.preload_jwt);
+    }
+
+    #[test]
+    fn builder_mutates_config_flags() {
+        let builder = AlorClientBuilder::new("token")
+            .demo(true)
+            .enable_ws(false)
+            .enable_cws(true)
+            .preload_jwt(false);
+        assert_eq!(builder.config.demo, true);
+        assert_eq!(builder.config.enable_ws, false);
+        assert_eq!(builder.config.enable_cws, true);
+        assert_eq!(builder.config.preload_jwt, false);
+    }
+
+    #[tokio::test]
+    async fn from_config_rejects_disabled_ws_or_cws_before_network() {
+        let result = AlorRust::from_config(
+            "dummy-token",
+            AlorConfig {
+                enable_ws: false,
+                ..AlorConfig::default()
+            },
+        )
+        .await;
+        let err = match result {
+            Ok(_) => panic!("expected config validation error"),
+            Err(err) => err,
+        };
+        assert!(err
+            .to_string()
+            .contains("enable_ws/enable_cws are not supported yet"));
     }
 }
