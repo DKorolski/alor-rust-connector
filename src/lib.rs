@@ -10,6 +10,8 @@ use std::error::Error as StdError;
 use std::io;
 use std::sync::mpsc;
 use tokio::task::JoinHandle;
+use tokio::sync::broadcast;
+use tokio::time::{timeout, Duration};
 use tokio_tungstenite::tungstenite::Utf8Bytes;
 
 
@@ -549,6 +551,153 @@ impl AlorRust {
             .map_err(|e| -> Box<dyn StdError> { Box::new(e) })?;
 
         Ok(subscribe_guid)
+    }
+
+    pub fn subscribe_ws_events(&self) -> broadcast::Receiver<Value> {
+        self.client.socket_client.subscribe_events()
+    }
+
+    pub fn subscribe_cws_events(&self) -> broadcast::Receiver<Value> {
+        self.cws_client.subscribe_events()
+    }
+
+    pub fn cws_request_guid(event: &Value) -> Option<String> {
+        event
+            .get("requestGuid")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+    }
+
+    pub fn cws_order_number(event: &Value) -> Option<String> {
+        event.get("orderNumber")
+            .and_then(|v| {
+                if v.is_string() {
+                    v.as_str().map(|s| s.to_string())
+                } else {
+                    Some(v.to_string())
+                }
+            })
+    }
+
+    pub fn ws_event_guid(event: &Value) -> Option<String> {
+        event.get("guid").and_then(|v| v.as_str()).map(|s| s.to_string())
+    }
+
+    pub fn ws_order_status_id(event: &Value) -> Option<String> {
+        event.get("data")
+            .and_then(|d| d.get("id"))
+            .and_then(|v| {
+                if v.is_string() {
+                    v.as_str().map(|s| s.to_string())
+                } else {
+                    Some(v.to_string())
+                }
+            })
+    }
+
+    pub async fn wait_cws_event_by_request_guid(
+        rx: &mut broadcast::Receiver<Value>,
+        request_guid: &str,
+        timeout_duration: Duration,
+    ) -> Result<Value, Box<dyn StdError>> {
+        let fut = async {
+            loop {
+                match rx.recv().await {
+                    Ok(event) => {
+                        if Self::cws_request_guid(&event).as_deref() == Some(request_guid) {
+                            return Ok(event);
+                        }
+                    }
+                    Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(broadcast::error::RecvError::Closed) => {
+                        return Err(io::Error::new(
+                            io::ErrorKind::BrokenPipe,
+                            "CWS event stream closed",
+                        )
+                        .into());
+                    }
+                }
+            }
+        };
+
+        timeout(timeout_duration, fut)
+            .await
+            .map_err(|_| -> Box<dyn StdError> {
+                Box::new(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "Timed out waiting for CWS event",
+                ))
+            })?
+    }
+
+    pub async fn wait_ws_event_by_guid(
+        rx: &mut broadcast::Receiver<Value>,
+        guid: &str,
+        timeout_duration: Duration,
+    ) -> Result<Value, Box<dyn StdError>> {
+        let fut = async {
+            loop {
+                match rx.recv().await {
+                    Ok(event) => {
+                        if Self::ws_event_guid(&event).as_deref() == Some(guid) {
+                            return Ok(event);
+                        }
+                    }
+                    Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(broadcast::error::RecvError::Closed) => {
+                        return Err(io::Error::new(
+                            io::ErrorKind::BrokenPipe,
+                            "WS event stream closed",
+                        )
+                        .into());
+                    }
+                }
+            }
+        };
+
+        timeout(timeout_duration, fut)
+            .await
+            .map_err(|_| -> Box<dyn StdError> {
+                Box::new(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "Timed out waiting for WS event",
+                ))
+            })?
+    }
+
+    pub async fn wait_ws_order_status_by_id(
+        rx: &mut broadcast::Receiver<Value>,
+        order_id: &str,
+        timeout_duration: Duration,
+    ) -> Result<Value, Box<dyn StdError>> {
+        let fut = async {
+            loop {
+                match rx.recv().await {
+                    Ok(event) => {
+                        if Self::ws_order_status_id(&event).as_deref() == Some(order_id) {
+                            return Ok(event);
+                        }
+                    }
+                    Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(broadcast::error::RecvError::Closed) => {
+                        return Err(io::Error::new(
+                            io::ErrorKind::BrokenPipe,
+                            "WS event stream closed",
+                        )
+                        .into());
+                    }
+                }
+            }
+        };
+
+        timeout(timeout_duration, fut)
+            .await
+            .map_err(|_| -> Box<dyn StdError> {
+                Box::new(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "Timed out waiting for WS order status event",
+                ))
+            })?
     }
 
     // convert

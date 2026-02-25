@@ -88,6 +88,24 @@ let mut client = AlorRust::new(
 
 То есть сценарий "создать заявку -> получить идентификатор заявки (`orderNumber`/`data.id`) через `OrdersGetAndSubscribeV2` -> изменить/удалить" пока не оформлен как удобный публичный API.
 
+### Что уже добавлено для нормального сценария (event streams)
+
+Для построения штатного сценария теперь можно использовать внутренние event-stream подписки:
+
+- `subscribe_ws_events()` - поток всех WS JSON-событий (включая `OrdersGetAndSubscribeV2`)
+- `subscribe_cws_events()` - поток всех CWS JSON-событий
+
+И helper-методы:
+
+- `wait_cws_event_by_request_guid(...)`
+- `wait_ws_event_by_guid(...)`
+- `wait_ws_order_status_by_id(...)`
+- `cws_request_guid(...)`
+- `cws_order_number(...)`
+- `ws_order_status_id(...)`
+
+Это позволяет собрать flow без доступа к внутренним полям `write_stream/read_stream`.
+
 ## Примеры (`examples/`)
 
 В каталоге есть 3 примера:

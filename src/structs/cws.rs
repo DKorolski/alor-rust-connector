@@ -7,6 +7,7 @@ use std::collections::HashMap;
 use std::str::FromStr;
 use std::sync::Arc;
 use tokio::net::TcpStream;
+use tokio::sync::broadcast;
 use tokio::sync::watch::{channel, Receiver};
 use tokio::sync::Mutex;
 use tokio::time::{timeout, Duration};
@@ -36,6 +37,7 @@ type ResponseCallback = Box<dyn Fn(Value) + Send + Sync>;
 pub struct CWS {
     pub write_stream: Arc<Mutex<SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>>>,
     pub request_callbacks: Arc<Mutex<HashMap<String, ResponseCallback>>>,
+    events_tx: broadcast::Sender<Value>,
     auth_client: AuthClient,
     last_auth: u64,
 }
@@ -54,15 +56,18 @@ impl CWS {
         // Хранилище для callback-функций по GUID запросов
         let request_callbacks: Arc<Mutex<HashMap<String, ResponseCallback>>> =
             Arc::new(Mutex::new(HashMap::new()));
+        let (events_tx, _) = broadcast::channel::<Value>(1024);
 
         // Канал для сигнала завершения
         let (_shutdown_tx, shutdown_rx) = channel(false);
 
         // Запускаем задачу чтения
         let callbacks_clone = request_callbacks.clone();
+        let events_tx_clone = events_tx.clone();
         tokio::spawn(Self::socket_listener(
             read,
             callbacks_clone,
+            events_tx_clone,
             shutdown_rx,
             client_callback,
         ));
@@ -72,6 +77,7 @@ impl CWS {
             write_stream,
             auth_client: AuthClient::new(refresh_token, demo)?,
             request_callbacks,
+            events_tx,
             last_auth: 0,
         })
     }
@@ -79,6 +85,7 @@ impl CWS {
     async fn socket_listener(
         mut stream: SplitStream<WebSocketStream<MaybeTlsStream<TcpStream>>>,
         request_callbacks: Arc<Mutex<HashMap<String, ResponseCallback>>>,
+        events_tx: broadcast::Sender<Value>,
         mut shutdown_rx: Receiver<bool>,
         global_callback: fn(&Value),
     ) {
@@ -95,6 +102,7 @@ impl CWS {
                                     match serde_json::from_str::<Value>(&txt) {
                                         Ok(api_response) => {
                                             debug!("Получен JSON: {:?}", api_response);
+                                            let _ = events_tx.send(api_response.clone());
 
                                             // Проверяем, есть ли requestGuid в ответе для сопоставления с запросом
                                             let request_guid = api_response.get("requestGuid").and_then(|v| v.as_str()).map(|s| s.to_string());
@@ -791,5 +799,9 @@ impl CWS {
             (self.last_auth <= (Utc::now().timestamp() as u64 - 20 * 60))
         );
         self.last_auth <= (Utc::now().timestamp() as u64 - 20 * 60)
+    }
+
+    pub fn subscribe_events(&self) -> broadcast::Receiver<Value> {
+        self.events_tx.subscribe()
     }
 }

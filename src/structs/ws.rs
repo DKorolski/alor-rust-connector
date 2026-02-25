@@ -3,6 +3,7 @@ use futures_util::StreamExt;
 use log::{debug, error, info, warn};
 use serde_json::Value;
 use tokio::net::TcpStream;
+use tokio::sync::broadcast;
 use tokio::sync::mpsc;
 use tokio::sync::watch::{channel, Receiver};
 use tokio_tungstenite::tungstenite::http::Uri;
@@ -13,12 +14,14 @@ use tokio_tungstenite::{
 #[derive(Debug)]
 pub struct WebSocketState {
     pub write_stream: SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>,
+    events_tx: broadcast::Sender<Value>,
 }
 
 impl WebSocketState {
     async fn socket_listener(
         mut stream: SplitStream<WebSocketStream<MaybeTlsStream<TcpStream>>>,
         _api_response_tx: mpsc::Sender<Value>,
+        events_tx: broadcast::Sender<Value>,
         mut shutdown_rx: Receiver<bool>,
         callback: fn(&Value),
     ) {
@@ -36,6 +39,7 @@ impl WebSocketState {
                                     match serde_json::from_str::<Value>(&txt) {
                                         Ok(api_response) => {
                                             debug!("Получен JSON: {:?}", api_response);
+                                            let _ = events_tx.send(api_response.clone());
                                             if api_response.get("data").is_none() {
                                                 callback(&api_response);
                                                 continue;
@@ -137,6 +141,7 @@ impl WebSocketState {
         // Канал для сообщений API -> Внешний мир (пользователь клиента)
         let (api_response_tx, _api_response_rx) = mpsc::channel::<Value>(100); // Буфер для полученных сообщений
                                                                                // Канал для сигнала завершения
+        let (events_tx, _) = broadcast::channel::<Value>(1024);
         let (_shutdown_tx, shutdown_rx) = channel(false);
 
         // Запускаем задачи чтения и записи
@@ -145,6 +150,7 @@ impl WebSocketState {
         tokio::spawn(Self::socket_listener(
             read,
             api_response_tx,
+            events_tx.clone(),
             reader_shutdown_rx,
             callback,
         ));
@@ -152,7 +158,12 @@ impl WebSocketState {
         info!("Успешно подключено!");
         Ok(WebSocketState {
             write_stream: write,
+            events_tx,
             // listener_inited: false,
         })
+    }
+
+    pub fn subscribe_events(&self) -> broadcast::Receiver<Value> {
+        self.events_tx.subscribe()
     }
 }
