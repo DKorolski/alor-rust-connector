@@ -71,6 +71,16 @@ pub struct DeleteLimitOrderFlowResult {
     pub order_id: String,
 }
 
+#[derive(Debug, Clone)]
+pub struct UpdateLimitOrderFlowResult {
+    pub request_guid: String,
+    pub cws_ack: Value,
+    pub old_order_status_event: Option<Value>,
+    pub new_order_status_event: Value,
+    pub old_order_id: String,
+    pub new_order_id: String,
+}
+
 impl AlorRust {
     pub async fn new(
         refresh_token: &str,
@@ -615,6 +625,13 @@ impl AlorRust {
             })
     }
 
+    pub fn ws_order_status(event: &Value) -> Option<String> {
+        event.get("data")
+            .and_then(|d| d.get("status"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_lowercase())
+    }
+
     pub async fn wait_cws_event_by_request_guid(
         rx: &mut broadcast::Receiver<Value>,
         request_guid: &str,
@@ -716,6 +733,49 @@ impl AlorRust {
                 Box::new(io::Error::new(
                     io::ErrorKind::TimedOut,
                     "Timed out waiting for WS order status event",
+                ))
+            })?
+    }
+
+    pub async fn wait_ws_order_status_by_id_and_predicate(
+        rx: &mut broadcast::Receiver<Value>,
+        order_id: &str,
+        timeout_duration: Duration,
+        predicate: fn(&str) -> bool,
+    ) -> Result<Value, Box<dyn StdError>> {
+        let fut = async {
+            loop {
+                match rx.recv().await {
+                    Ok(event) => {
+                        if Self::ws_order_status_id(&event).as_deref() != Some(order_id) {
+                            continue;
+                        }
+                        let Some(status) = Self::ws_order_status(&event) else {
+                            continue;
+                        };
+                        if !predicate(&status) {
+                            continue;
+                        }
+                        return Ok(event);
+                    }
+                    Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(broadcast::error::RecvError::Closed) => {
+                        return Err(io::Error::new(
+                            io::ErrorKind::BrokenPipe,
+                            "WS event stream closed",
+                        )
+                        .into());
+                    }
+                }
+            }
+        };
+
+        timeout(timeout_duration, fut)
+            .await
+            .map_err(|_| -> Box<dyn StdError> {
+                Box::new(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "Timed out waiting for WS order status event by predicate",
                 ))
             })?
     }
@@ -879,6 +939,109 @@ impl AlorRust {
             cws_ack,
             ws_status_event,
             order_id: resolved_order_id,
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn update_limit_order_and_wait_status(
+        &mut self,
+        cws_rx: &mut broadcast::Receiver<Value>,
+        ws_rx: &mut broadcast::Receiver<Value>,
+        ws_subscribe_guid: &str,
+        old_order_id: &str,
+        side: dto::cws_dto::order_common::OrderSide,
+        quantity: i32,
+        price: f64,
+        symbol: &str,
+        exchange: &str,
+        instrument_group: Option<&str>,
+        portfolio: &str,
+        comment: Option<String>,
+        allow_margin: Option<bool>,
+        iceberg_fixed: Option<i32>,
+        check_duplicates: Option<bool>,
+        timeout_duration: Duration,
+    ) -> Result<UpdateLimitOrderFlowResult, Box<dyn StdError>> {
+        let request_guid = self
+            .cws_client
+            .update_limit_order(
+                old_order_id,
+                side,
+                quantity,
+                price,
+                symbol,
+                exchange,
+                instrument_group,
+                portfolio,
+                comment,
+                allow_margin,
+                iceberg_fixed,
+                check_duplicates,
+            )
+            .await
+            .map_err(|e| -> Box<dyn StdError> {
+                Box::new(io::Error::new(io::ErrorKind::Other, e.to_string()))
+            })?;
+
+        let cws_ack =
+            Self::wait_cws_event_by_request_guid(cws_rx, &request_guid, timeout_duration).await?;
+
+        let ack_order_id = Self::cws_order_number(&cws_ack);
+
+        // На некоторых рынках update реализуется как cancel old + create new.
+        // Если сервер вернул новый order id и он отличается, ждём две WS записи:
+        // 1) old -> canceled, 2) new -> working/любой статус.
+        if let Some(new_order_id) = ack_order_id.clone() {
+            if new_order_id != old_order_id {
+                let old_order_status_event = Self::wait_ws_order_status_by_id_and_predicate(
+                    ws_rx,
+                    old_order_id,
+                    timeout_duration,
+                    |s| s == "canceled" || s == "cancelled",
+                )
+                .await
+                .ok();
+
+                let new_order_status_event =
+                    Self::wait_ws_order_status_by_id(ws_rx, &new_order_id, timeout_duration)
+                        .await?;
+
+                return Ok(UpdateLimitOrderFlowResult {
+                    request_guid,
+                    cws_ack,
+                    old_order_status_event,
+                    new_order_status_event,
+                    old_order_id: old_order_id.to_string(),
+                    new_order_id,
+                });
+            }
+        }
+
+        // Fallback: либо id не изменился, либо в CWS ack id не пришёл.
+        let new_order_status_event = if let Some(same_id) = ack_order_id.clone() {
+            Self::wait_ws_order_status_by_id(ws_rx, &same_id, timeout_duration).await?
+        } else {
+            Self::wait_ws_order_status_event(
+                ws_rx,
+                ws_subscribe_guid,
+                portfolio,
+                symbol,
+                timeout_duration,
+            )
+            .await?
+        };
+
+        let new_order_id = Self::ws_order_status_id(&new_order_status_event)
+            .or(ack_order_id)
+            .unwrap_or_else(|| old_order_id.to_string());
+
+        Ok(UpdateLimitOrderFlowResult {
+            request_guid,
+            cws_ack,
+            old_order_status_event: None,
+            new_order_status_event,
+            old_order_id: old_order_id.to_string(),
+            new_order_id,
         })
     }
 

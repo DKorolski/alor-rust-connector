@@ -15,7 +15,7 @@
 - публичный API есть и покрывает базовые REST/CWS операции;
 - документация была минимальной и частично устаревшей;
 - в коде много `unwrap/expect/panic` (ошибки не везде обрабатываются безопасно);
-- примеры в `examples/` не все отражают рабочий production-flow;
+- примеры были приведены в порядок, но набор пока минимальный (1 live smoke test);
 - автоматических тестов сейчас нет.
 
 Подробный аудит и план доработок: `alor-rust-connector/docs/AUDIT_AND_ITERATION_TZ.md`.
@@ -102,6 +102,7 @@ let mut client = AlorRust::new(
 - `wait_ws_order_status_by_id(...)`
 - `wait_ws_order_status_event(...)`
 - `create_limit_order_and_wait_status_id(...)`
+- `update_limit_order_and_wait_status(...)`
 - `delete_limit_order_and_wait_status(...)`
 - `cws_request_guid(...)`
 - `cws_order_number(...)`
@@ -111,22 +112,11 @@ let mut client = AlorRust::new(
 
 ## Примеры (`examples/`)
 
-В каталоге сейчас несколько примеров (включая экспериментальные/live smoke):
+В каталоге оставлен один рекомендуемый пример:
 
-1. `examples/cws_example.rs`
-- большой демонстрационный сценарий create/update/delete для разных типов заявок;
-- содержит хардкод токена/портфелей и не подходит как безопасный шаблон.
-
-2. `examples/cws_example_1.rs`
-- пытается сделать create -> прочитать событие -> извлечь `orderNumber` -> update/delete;
-- расходится с текущим API `CWS` (обращается к полю `read_stream`, которого нет).
-
-3. `examples/cws_example_2.rs`
-- упрощенный сценарий для limit order;
-- использует фиктивный `order_number = "10"` и поэтому не является полноценным рабочим примером.
-
-4. `examples/cws_example_5.rs`
+1. `examples/cws_orders_smoke.rs`
 - live smoke test на новом event-driven API (`subscribe_ws_events`, `subscribe_cws_events`);
+- использует helper-методы высокого уровня (`create_limit_order_and_wait_status_id`, `delete_limit_order_and_wait_status`);
 - подтверждает сценарий create -> WS `data.id` -> delete через `OrdersGetAndSubscribeV2`.
 
 ## Конфигурация и переменные окружения
