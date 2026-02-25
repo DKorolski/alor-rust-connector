@@ -10,6 +10,11 @@
 
 Важно: аудит выполнен статически по исходникам. Полный `cargo check` в текущем окружении не выполнен из-за отсутствия доступа к `crates.io`.
 
+Дополнение (после последующих доработок и live smoke test):
+
+- подтвержден рабочий сценарий `create -> update -> delete` через `CWS + OrdersGetAndSubscribeV2`;
+- подтверждено, что `update:limit` в проверенном кейсе работает как `cancel old + create new` (новый `orderNumber` + два WS статуса).
+
 ## Краткое резюме состояния
 
 - Библиотека объединяет REST (`ApiClient`), market-data WebSocket (`ws`) и command WebSocket (`cws`) в одном типе `AlorRust`.
@@ -37,6 +42,7 @@
 4. `CWS` create/update/delete методы возвращают только `guid`, а сценарий получения идентификатора заявки через `OrdersGetAndSubscribeV2` не оформлен в публичном API.
 - Риск: клиент вынужден вручную собирать связку `CWS ack + WS stream статусов`, часто через внутренние поля.
 - Это ломает основной use-case "создать -> получить `orderNumber`/`id` -> обновить/удалить".
+ - Статус: частично закрыто (добавлены event-stream API и helper-методы высокого уровня для `create/update/delete limit`).
 
 5. В `CWS::socket_listener()` сообщения без `requestGuid` фактически теряются (только debug-log).
 - Риск: пуш-события/асинхронные события сервера не доходят до пользователя.

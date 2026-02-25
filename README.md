@@ -110,14 +110,58 @@ let mut client = AlorRust::new(
 
 Это позволяет собрать flow без доступа к внутренним полям `write_stream/read_stream`.
 
+### Что уже подтверждено live (через `cws_orders_smoke`)
+
+- `OrdersGetAndSubscribeV2` отдает статусы заявок и `data.id` (источник фактического ID заявки)
+- `create:limit` -> `CWS ack` -> `WS status (working)`
+- `update:limit` -> `CWS ack` с новым `orderNumber` -> `WS old=canceled` + `WS new=working`
+- `delete:limit` -> `CWS ack` -> `WS status (canceled)`
+
+Это означает, что на текущем проверенном сценарии update действительно реализуется как `cancel old + create new`.
+
+### Рекомендуемый Flow (Текущий API)
+
+```rust
+let mut ws_rx = client.subscribe_ws_events();
+let mut cws_rx = client.subscribe_cws_events();
+
+let sub_guid = client
+    .subscribe_orders_statuses_v2("MOEX", portfolio, None, true, 0, "Simple")
+    .await?;
+
+let create = client
+    .create_limit_order_and_wait_status_id(
+        &mut cws_rx, &mut ws_rx, &sub_guid.to_string(),
+        OrderSide::Buy, 1, 2700.0, "IMOEXF", "MOEX", None, portfolio,
+        None, Some(TimeInForce::BookOrCancel), Some(true), None, None, Some(true),
+        std::time::Duration::from_secs(5),
+    )
+    .await?;
+
+let update = client
+    .update_limit_order_and_wait_status(
+        &mut cws_rx, &mut ws_rx, &sub_guid.to_string(), &create.order_id,
+        OrderSide::Buy, 1, 2710.0, "IMOEXF", "MOEX", None, portfolio,
+        None, Some(true), None, Some(true), std::time::Duration::from_secs(5),
+    )
+    .await?;
+
+let _delete = client
+    .delete_limit_order_and_wait_status(
+        &mut cws_rx, &mut ws_rx, &update.new_order_id, "MOEX", portfolio,
+        Some(true), std::time::Duration::from_secs(5),
+    )
+    .await?;
+```
+
 ## Примеры (`examples/`)
 
 В каталоге оставлен один рекомендуемый пример:
 
 1. `examples/cws_orders_smoke.rs`
 - live smoke test на новом event-driven API (`subscribe_ws_events`, `subscribe_cws_events`);
-- использует helper-методы высокого уровня (`create_limit_order_and_wait_status_id`, `delete_limit_order_and_wait_status`);
-- подтверждает сценарий create -> WS `data.id` -> delete через `OrdersGetAndSubscribeV2`.
+- использует helper-методы высокого уровня (`create_limit_order_and_wait_status_id`, `update_limit_order_and_wait_status`, `delete_limit_order_and_wait_status`);
+- подтверждает сценарий create -> update -> delete с получением ID из `OrdersGetAndSubscribeV2`.
 
 ## Конфигурация и переменные окружения
 

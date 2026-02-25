@@ -24,6 +24,10 @@ async fn main() -> Result<()> {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(2700.0);
+    let update_delta: f64 = std::env::var("ALOR_UPDATE_DELTA")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(10.0);
 
     let mut client = AlorRust::new(&refresh_token, false, log_ws_event, log_cws_event).await?;
 
@@ -32,8 +36,7 @@ async fn main() -> Result<()> {
 
     let subscribe_guid = client
         .subscribe_orders_statuses_v2(&exchange, &portfolio, None, true, 0, "Simple")
-        .await
-        .map_err(|e| anyhow!(e.to_string()))?;
+        .await?;
     let subscribe_guid_s = subscribe_guid.to_string();
     let subscribe_evt = AlorRust::wait_ws_event_by_guid(
         &mut ws_rx,
@@ -68,8 +71,7 @@ async fn main() -> Result<()> {
             Some(true),
             Duration::from_secs(5),
         )
-        .await
-        .map_err(|e| anyhow!(e.to_string()))?;
+        .await?;
     let create_ack = create_result.cws_ack.clone();
     let ws_create_evt = create_result.ws_status_event.clone();
     info!("CWS create ack: {}", create_ack);
@@ -78,6 +80,42 @@ async fn main() -> Result<()> {
     // Источник истины по ID заявки: событие статуса (OrdersGetAndSubscribeV2 -> data.id)
     let order_id = create_result.order_id;
     info!("Order id (source-of-truth WS): {}", order_id);
+
+    // update
+    let new_price = price + update_delta;
+    let update_result = client
+        .update_limit_order_and_wait_status(
+            &mut cws_rx,
+            &mut ws_rx,
+            &subscribe_guid_s,
+            &order_id,
+            OrderSide::Buy,
+            qty,
+            new_price,
+            &symbol,
+            &exchange,
+            None,
+            &portfolio,
+            None,
+            Some(true),
+            None,
+            Some(true),
+            Duration::from_secs(5),
+        )
+        .await?;
+    info!("CWS update ack: {}", update_result.cws_ack);
+    if let Some(old_evt) = &update_result.old_order_status_event {
+        info!("WS old order status event (update): {}", old_evt);
+    }
+    info!(
+        "WS new order status event (update): {}",
+        update_result.new_order_status_event
+    );
+    info!(
+        "Update ids: old={}, new={}",
+        update_result.old_order_id, update_result.new_order_id
+    );
+    let order_id = update_result.new_order_id.clone();
 
     // delete (smoke test)
     let delete_result = client
@@ -90,8 +128,7 @@ async fn main() -> Result<()> {
             Some(true),
             Duration::from_secs(5),
         )
-        .await
-        .map_err(|e| anyhow!(e.to_string()))?;
+        .await?;
     let delete_ack = delete_result.cws_ack.clone();
     info!("CWS delete ack: {}", delete_ack);
 

@@ -46,7 +46,7 @@ use structs::history_data::*;
 use uuid::Uuid;
 use structs::auth_client::AuthClient;
 
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 
 /// Formats the sum of two numbers as string.
 pub struct AlorRust {
@@ -484,7 +484,12 @@ impl AlorRust {
         frequency: i32,
         format: &str,
     ) -> Result<Uuid, Box<dyn StdError>> {
-        let data_json: Value = serde_json::from_str(self.auth_client.get_jwt_token().await?.as_str())?;
+        let jwt_raw = self
+            .auth_client
+            .get_jwt_token()
+            .await
+            .map_err(|e| anyhow!(e.to_string()))?;
+        let data_json: Value = serde_json::from_str(jwt_raw.as_str())?;
         let auth_token = data_json
             .get("AccessToken")
             .and_then(|v| v.as_str())
@@ -535,12 +540,17 @@ impl AlorRust {
         skip_history: bool,
         frequency: i32,
         format: &str,
-    ) -> Result<Uuid, Box<dyn StdError>> {
-        let data_json: Value = serde_json::from_str(self.auth_client.get_jwt_token().await?.as_str())?;
+    ) -> anyhow::Result<Uuid> {
+        let jwt_raw = self
+            .auth_client
+            .get_jwt_token()
+            .await
+            .map_err(|e| anyhow!(e.to_string()))?;
+        let data_json: Value = serde_json::from_str(jwt_raw.as_str())?;
         let auth_token = data_json
             .get("AccessToken")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "AccessToken missing in JWT response"))?
+            .ok_or_else(|| anyhow!("AccessToken missing in JWT response"))?
             .to_string();
 
         let mut request_body = Value::Object(serde_json::Map::new());
@@ -573,8 +583,7 @@ impl AlorRust {
             .socket_client
             .write_stream
             .send(message)
-            .await
-            .map_err(|e| -> Box<dyn StdError> { Box::new(e) })?;
+            .await?;
 
         Ok(subscribe_guid)
     }
@@ -603,6 +612,10 @@ impl AlorRust {
                     Some(v.to_string())
                 }
             })
+    }
+
+    pub fn cws_http_code(event: &Value) -> Option<u64> {
+        event.get("httpCode").and_then(|v| v.as_u64())
     }
 
     pub fn ws_event_guid(event: &Value) -> Option<String> {
@@ -636,7 +649,7 @@ impl AlorRust {
         rx: &mut broadcast::Receiver<Value>,
         request_guid: &str,
         timeout_duration: Duration,
-    ) -> Result<Value, Box<dyn StdError>> {
+    ) -> anyhow::Result<Value> {
         let fut = async {
             loop {
                 match rx.recv().await {
@@ -647,11 +660,7 @@ impl AlorRust {
                     }
                     Err(broadcast::error::RecvError::Lagged(_)) => continue,
                     Err(broadcast::error::RecvError::Closed) => {
-                        return Err(io::Error::new(
-                            io::ErrorKind::BrokenPipe,
-                            "CWS event stream closed",
-                        )
-                        .into());
+                        return Err(anyhow!("CWS event stream closed"));
                     }
                 }
             }
@@ -659,19 +668,14 @@ impl AlorRust {
 
         timeout(timeout_duration, fut)
             .await
-            .map_err(|_| -> Box<dyn StdError> {
-                Box::new(io::Error::new(
-                    io::ErrorKind::TimedOut,
-                    "Timed out waiting for CWS event",
-                ))
-            })?
+            .map_err(|_| anyhow!("Timed out waiting for CWS event"))?
     }
 
     pub async fn wait_ws_event_by_guid(
         rx: &mut broadcast::Receiver<Value>,
         guid: &str,
         timeout_duration: Duration,
-    ) -> Result<Value, Box<dyn StdError>> {
+    ) -> anyhow::Result<Value> {
         let fut = async {
             loop {
                 match rx.recv().await {
@@ -682,11 +686,7 @@ impl AlorRust {
                     }
                     Err(broadcast::error::RecvError::Lagged(_)) => continue,
                     Err(broadcast::error::RecvError::Closed) => {
-                        return Err(io::Error::new(
-                            io::ErrorKind::BrokenPipe,
-                            "WS event stream closed",
-                        )
-                        .into());
+                        return Err(anyhow!("WS event stream closed"));
                     }
                 }
             }
@@ -694,19 +694,14 @@ impl AlorRust {
 
         timeout(timeout_duration, fut)
             .await
-            .map_err(|_| -> Box<dyn StdError> {
-                Box::new(io::Error::new(
-                    io::ErrorKind::TimedOut,
-                    "Timed out waiting for WS event",
-                ))
-            })?
+            .map_err(|_| anyhow!("Timed out waiting for WS event"))?
     }
 
     pub async fn wait_ws_order_status_by_id(
         rx: &mut broadcast::Receiver<Value>,
         order_id: &str,
         timeout_duration: Duration,
-    ) -> Result<Value, Box<dyn StdError>> {
+    ) -> anyhow::Result<Value> {
         let fut = async {
             loop {
                 match rx.recv().await {
@@ -717,11 +712,7 @@ impl AlorRust {
                     }
                     Err(broadcast::error::RecvError::Lagged(_)) => continue,
                     Err(broadcast::error::RecvError::Closed) => {
-                        return Err(io::Error::new(
-                            io::ErrorKind::BrokenPipe,
-                            "WS event stream closed",
-                        )
-                        .into());
+                        return Err(anyhow!("WS event stream closed"));
                     }
                 }
             }
@@ -729,12 +720,7 @@ impl AlorRust {
 
         timeout(timeout_duration, fut)
             .await
-            .map_err(|_| -> Box<dyn StdError> {
-                Box::new(io::Error::new(
-                    io::ErrorKind::TimedOut,
-                    "Timed out waiting for WS order status event",
-                ))
-            })?
+            .map_err(|_| anyhow!("Timed out waiting for WS order status event"))?
     }
 
     pub async fn wait_ws_order_status_by_id_and_predicate(
@@ -742,7 +728,7 @@ impl AlorRust {
         order_id: &str,
         timeout_duration: Duration,
         predicate: fn(&str) -> bool,
-    ) -> Result<Value, Box<dyn StdError>> {
+    ) -> anyhow::Result<Value> {
         let fut = async {
             loop {
                 match rx.recv().await {
@@ -760,11 +746,7 @@ impl AlorRust {
                     }
                     Err(broadcast::error::RecvError::Lagged(_)) => continue,
                     Err(broadcast::error::RecvError::Closed) => {
-                        return Err(io::Error::new(
-                            io::ErrorKind::BrokenPipe,
-                            "WS event stream closed",
-                        )
-                        .into());
+                        return Err(anyhow!("WS event stream closed"));
                     }
                 }
             }
@@ -772,12 +754,7 @@ impl AlorRust {
 
         timeout(timeout_duration, fut)
             .await
-            .map_err(|_| -> Box<dyn StdError> {
-                Box::new(io::Error::new(
-                    io::ErrorKind::TimedOut,
-                    "Timed out waiting for WS order status event by predicate",
-                ))
-            })?
+            .map_err(|_| anyhow!("Timed out waiting for WS order status event by predicate"))?
     }
 
     pub async fn wait_ws_order_status_event(
@@ -786,7 +763,7 @@ impl AlorRust {
         portfolio: &str,
         symbol: &str,
         timeout_duration: Duration,
-    ) -> Result<Value, Box<dyn StdError>> {
+    ) -> anyhow::Result<Value> {
         let fut = async {
             loop {
                 match rx.recv().await {
@@ -810,11 +787,7 @@ impl AlorRust {
                     }
                     Err(broadcast::error::RecvError::Lagged(_)) => continue,
                     Err(broadcast::error::RecvError::Closed) => {
-                        return Err(io::Error::new(
-                            io::ErrorKind::BrokenPipe,
-                            "WS event stream closed",
-                        )
-                        .into());
+                        return Err(anyhow!("WS event stream closed"));
                     }
                 }
             }
@@ -822,12 +795,7 @@ impl AlorRust {
 
         timeout(timeout_duration, fut)
             .await
-            .map_err(|_| -> Box<dyn StdError> {
-                Box::new(io::Error::new(
-                    io::ErrorKind::TimedOut,
-                    "Timed out waiting for WS order status event by subscription",
-                ))
-            })?
+            .map_err(|_| anyhow!("Timed out waiting for WS order status event by subscription"))?
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -850,7 +818,7 @@ impl AlorRust {
         iceberg_variance: Option<i32>,
         check_duplicates: Option<bool>,
         timeout_duration: Duration,
-    ) -> Result<CreateLimitOrderFlowResult, Box<dyn StdError>> {
+    ) -> anyhow::Result<CreateLimitOrderFlowResult> {
         let request_guid = self
             .cws_client
             .create_limit_order(
@@ -868,13 +836,16 @@ impl AlorRust {
                 iceberg_variance,
                 check_duplicates,
             )
-            .await
-            .map_err(|e| -> Box<dyn StdError> {
-                Box::new(io::Error::new(io::ErrorKind::Other, e.to_string()))
-            })?;
+            .await?;
 
         let cws_ack =
             Self::wait_cws_event_by_request_guid(cws_rx, &request_guid, timeout_duration).await?;
+
+        if let Some(code) = Self::cws_http_code(&cws_ack) {
+            if code != 200 {
+                return Err(anyhow!("create_limit_order failed, cws ack: {}", cws_ack));
+            }
+        }
 
         let ws_status_event = if let Some(order_id) = Self::cws_order_number(&cws_ack) {
             Self::wait_ws_order_status_by_id(ws_rx, &order_id, timeout_duration).await?
@@ -886,17 +857,13 @@ impl AlorRust {
                 symbol,
                 timeout_duration,
             )
-            .await?
+            .await
+            .map_err(|e| anyhow!("No order id in CWS ack and WS status not received. cws ack: {} ; err: {}", cws_ack, e))?
         };
 
         let order_id = Self::ws_order_status_id(&ws_status_event)
             .or_else(|| Self::cws_order_number(&cws_ack))
-            .ok_or_else(|| {
-                Box::new(io::Error::new(
-                    io::ErrorKind::Other,
-                    "No order id in WS status event or CWS ack",
-                )) as Box<dyn StdError>
-            })?;
+            .ok_or_else(|| anyhow!("No order id in WS status event or CWS ack"))?;
 
         Ok(CreateLimitOrderFlowResult {
             request_guid,
@@ -915,17 +882,20 @@ impl AlorRust {
         portfolio: &str,
         check_duplicates: Option<bool>,
         timeout_duration: Duration,
-    ) -> Result<DeleteLimitOrderFlowResult, Box<dyn StdError>> {
+    ) -> anyhow::Result<DeleteLimitOrderFlowResult> {
         let request_guid = self
             .cws_client
             .delete_limit_order(order_id, exchange, portfolio, check_duplicates)
-            .await
-            .map_err(|e| -> Box<dyn StdError> {
-                Box::new(io::Error::new(io::ErrorKind::Other, e.to_string()))
-            })?;
+            .await?;
 
         let cws_ack =
             Self::wait_cws_event_by_request_guid(cws_rx, &request_guid, timeout_duration).await?;
+
+        if let Some(code) = Self::cws_http_code(&cws_ack) {
+            if code != 200 {
+                return Err(anyhow!("delete_limit_order failed, cws ack: {}", cws_ack));
+            }
+        }
 
         let ws_status_event =
             Self::wait_ws_order_status_by_id(ws_rx, order_id, timeout_duration).await?;
@@ -961,7 +931,7 @@ impl AlorRust {
         iceberg_fixed: Option<i32>,
         check_duplicates: Option<bool>,
         timeout_duration: Duration,
-    ) -> Result<UpdateLimitOrderFlowResult, Box<dyn StdError>> {
+    ) -> anyhow::Result<UpdateLimitOrderFlowResult> {
         let request_guid = self
             .cws_client
             .update_limit_order(
@@ -978,13 +948,16 @@ impl AlorRust {
                 iceberg_fixed,
                 check_duplicates,
             )
-            .await
-            .map_err(|e| -> Box<dyn StdError> {
-                Box::new(io::Error::new(io::ErrorKind::Other, e.to_string()))
-            })?;
+            .await?;
 
         let cws_ack =
             Self::wait_cws_event_by_request_guid(cws_rx, &request_guid, timeout_duration).await?;
+
+        if let Some(code) = Self::cws_http_code(&cws_ack) {
+            if code != 200 {
+                return Err(anyhow!("update_limit_order failed, cws ack: {}", cws_ack));
+            }
+        }
 
         let ack_order_id = Self::cws_order_number(&cws_ack);
 
