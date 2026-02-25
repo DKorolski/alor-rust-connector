@@ -34,7 +34,7 @@ async fn main() -> Result<()> {
     let mut cws_rx = client.subscribe_cws_events();
 
     let (subscribe_guid, subscribe_evt) = client
-        .subscribe_orders_statuses_v2_and_wait_ack(
+        .subscribe_orders_statuses_v2_and_wait_ack_typed(
             &mut ws_rx,
             &exchange,
             &portfolio,

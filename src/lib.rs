@@ -44,7 +44,7 @@ use structs::api_client::*;
 use structs::history_data::*;
 use uuid::Uuid;
 use structs::auth_client::AuthClient;
-pub use dto::events::{CwsAckEvent, WsOrderStatusEvent};
+pub use dto::events::{CwsAckEvent, WsOrderStatusEvent, WsSubscribeAckEvent};
 
 use anyhow::{anyhow, Result};
 
@@ -664,6 +664,32 @@ impl AlorRust {
         Ok((subscribe_guid, ack))
     }
 
+    pub async fn subscribe_orders_statuses_v2_and_wait_ack_typed(
+        &mut self,
+        ws_rx: &mut broadcast::Receiver<Value>,
+        exchange: &str,
+        portfolio: &str,
+        order_statuses: Option<Vec<String>>,
+        skip_history: bool,
+        frequency: i32,
+        format: &str,
+        timeout_duration: Duration,
+    ) -> anyhow::Result<(Uuid, WsSubscribeAckEvent)> {
+        let (guid, ack) = self
+            .subscribe_orders_statuses_v2_and_wait_ack(
+                ws_rx,
+                exchange,
+                portfolio,
+                order_statuses,
+                skip_history,
+                frequency,
+                format,
+                timeout_duration,
+            )
+            .await?;
+        Ok((guid, WsSubscribeAckEvent::from_raw(ack)))
+    }
+
     pub fn subscribe_ws_events(&self) -> broadcast::Receiver<Value> {
         self.client.socket_client.subscribe_events()
     }
@@ -1234,7 +1260,7 @@ pub fn init_logger(level: &str) {
 #[cfg(test)]
 mod tests {
     use super::helpers::servers::get_server_url;
-    use super::{AlorRust, CwsAckEvent, WsOrderStatusEvent};
+    use super::{AlorRust, CwsAckEvent, WsOrderStatusEvent, WsSubscribeAckEvent};
     use serde_json::json;
 
     #[test]
@@ -1311,6 +1337,20 @@ mod tests {
         assert_eq!(evt.status.as_deref(), Some("working"));
         assert_eq!(evt.portfolio.as_deref(), Some("7502T0U"));
         assert_eq!(evt.symbol.as_deref(), Some("IMOEXF"));
+        assert_eq!(evt.raw, raw);
+    }
+
+    #[test]
+    fn ws_subscribe_ack_event_from_raw_parses_fields() {
+        let raw = json!({
+            "httpCode": 200,
+            "message": "Handled successfully",
+            "requestGuid": "sub-req-1"
+        });
+        let evt = WsSubscribeAckEvent::from_raw(raw.clone());
+        assert_eq!(evt.http_code, Some(200));
+        assert_eq!(evt.message.as_deref(), Some("Handled successfully"));
+        assert_eq!(evt.request_guid.as_deref(), Some("sub-req-1"));
         assert_eq!(evt.raw, raw);
     }
 

@@ -86,7 +86,10 @@ let mut client = AlorRust::new(
 
 Эти методы сейчас возвращают `Result<String>`, где строка - это `requestGuid` (GUID запроса), а не ответ сервера и не `orderNumber`.
 
-Полностью типизированный сценарий "create/update/delete + wait statuses" пока не завершен, но уже есть первый helper высокого уровня для create-flow: `create_limit_order_and_wait_status_id(...)`.
+Для limit order уже реализован рабочий сценарий высокого уровня с ожиданием статусов:
+- `create_limit_order_and_wait_status_id(...)`
+- `update_limit_order_and_wait_status(...)`
+- `delete_limit_order_and_wait_status(...)`
 
 ### Что уже добавлено для нормального сценария (event streams)
 
@@ -104,6 +107,8 @@ let mut client = AlorRust::new(
 - `create_limit_order_and_wait_status_id(...)`
 - `update_limit_order_and_wait_status(...)`
 - `delete_limit_order_and_wait_status(...)`
+- `subscribe_orders_statuses_v2_and_wait_ack(...)`
+- `subscribe_orders_statuses_v2_and_wait_ack_typed(...)`
 - `cws_request_guid(...)`
 - `cws_order_number(...)`
 - `ws_order_status_id(...)`
@@ -125,8 +130,11 @@ let mut client = AlorRust::new(
 let mut ws_rx = client.subscribe_ws_events();
 let mut cws_rx = client.subscribe_cws_events();
 
-let sub_guid = client
-    .subscribe_orders_statuses_v2("MOEX", portfolio, None, true, 0, "Simple")
+let (sub_guid, _sub_ack) = client
+    .subscribe_orders_statuses_v2_and_wait_ack_typed(
+        &mut ws_rx, "MOEX", portfolio, None, true, 0, "Simple",
+        std::time::Duration::from_secs(5),
+    )
     .await?;
 
 let create = client
@@ -160,6 +168,7 @@ let _delete = client
 
 1. `examples/cws_orders_smoke.rs`
 - live smoke test на новом event-driven API (`subscribe_ws_events`, `subscribe_cws_events`);
+- использует typed helper подписки `subscribe_orders_statuses_v2_and_wait_ack_typed(...)`;
 - использует helper-методы высокого уровня (`create_limit_order_and_wait_status_id`, `update_limit_order_and_wait_status`, `delete_limit_order_and_wait_status`);
 - подтверждает сценарий create -> update -> delete с получением ID из `OrdersGetAndSubscribeV2`.
 
@@ -169,19 +178,10 @@ let _delete = client
 
 - refresh token передается в `AlorRust::new(...)`
 
-### Важно: скрытая зависимость текущего кода
+### Примечание по `PORTFOLIO_NUMBER`
 
-В текущей реализации разбор аккаунтов из JWT внутри `AuthClient` использует переменную окружения `PORTFOLIO_NUMBER`.
-
-Если она не задана, инициализация/обновление токена может завершиться panic.
-
-Пример:
-
-```bash
-export PORTFOLIO_NUMBER=750
-```
-
-Это ограничение текущей реализации, планируется убрать/сделать явным параметром.
+Переменная `PORTFOLIO_NUMBER` больше не является обязательной (panic-path убран).
+Если задана, используется как дополнительная фильтрация при разборе деривативных портфелей из JWT.
 
 ## Серверы (demo/prod)
 

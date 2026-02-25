@@ -49,6 +49,22 @@ impl fmt::Display for WsOrderStatusEvent {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct WsSubscribeAckEvent {
+    pub raw: Value,
+    pub guid: Option<String>,
+    pub request_guid: Option<String>,
+    pub http_code: Option<u64>,
+    pub message: Option<String>,
+    pub data_guid: Option<String>,
+}
+
+impl fmt::Display for WsSubscribeAckEvent {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.raw)
+    }
+}
+
 impl WsOrderStatusEvent {
     pub fn from_raw(raw: Value) -> Self {
         let parsed = serde_json::from_value::<WireWsOrderStatusEnvelope>(raw.clone()).ok();
@@ -63,6 +79,25 @@ impl WsOrderStatusEvent {
                 .map(|s| s.to_lowercase()),
             portfolio: data.and_then(|d| d.portfolio.clone()),
             symbol: data.and_then(|d| d.symbol.clone()),
+            raw,
+        }
+    }
+}
+
+impl WsSubscribeAckEvent {
+    pub fn from_raw(raw: Value) -> Self {
+        let parsed = serde_json::from_value::<WireWsSubscribeAck>(raw.clone()).ok();
+        let data_guid = raw
+            .get("data")
+            .and_then(|d| d.get("guid"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        Self {
+            guid: parsed.as_ref().and_then(|p| p.guid.clone()),
+            request_guid: parsed.as_ref().and_then(|p| p.request_guid.clone()),
+            http_code: parsed.as_ref().and_then(|p| p.http_code),
+            message: parsed.as_ref().and_then(|p| p.message.clone()),
+            data_guid,
             raw,
         }
     }
@@ -85,6 +120,16 @@ struct WireWsOrderStatusEnvelope {
     #[serde(rename = "requestGuid")]
     request_guid: Option<String>,
     data: Option<WireWsOrderStatusData>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct WireWsSubscribeAck {
+    guid: Option<String>,
+    #[serde(rename = "requestGuid")]
+    request_guid: Option<String>,
+    #[serde(rename = "httpCode")]
+    http_code: Option<u64>,
+    message: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
