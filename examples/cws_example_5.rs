@@ -48,9 +48,11 @@ async fn main() -> Result<()> {
     info!("OrdersGetAndSubscribeV2 ack/event: {}", subscribe_evt);
 
     // create
-    let create_guid = client
-        .cws_client
-        .create_limit_order(
+    let create_result = client
+        .create_limit_order_and_wait_status_id(
+            &mut cws_rx,
+            &mut ws_rx,
+            &subscribe_guid_s,
             OrderSide::Buy,
             qty,
             price,
@@ -64,57 +66,36 @@ async fn main() -> Result<()> {
             None,
             None,
             Some(true),
+            Duration::from_secs(5),
         )
-        .await?;
-    let create_ack = AlorRust::wait_cws_event_by_request_guid(
-        &mut cws_rx,
-        &create_guid,
-        Duration::from_secs(5),
-    )
-    .await
-    .map_err(|e| anyhow!(e.to_string()))?;
+        .await
+        .map_err(|e| anyhow!(e.to_string()))?;
+    let create_ack = create_result.cws_ack.clone();
+    let ws_create_evt = create_result.ws_status_event.clone();
     info!("CWS create ack: {}", create_ack);
-
-    let ws_create_evt = wait_order_status_event(
-        &mut ws_rx,
-        &subscribe_guid_s,
-        &portfolio,
-        &symbol,
-        None,
-        Duration::from_secs(5),
-    )
-    .await?;
     info!("WS create status event: {}", ws_create_evt);
 
     // Источник истины по ID заявки: событие статуса (OrdersGetAndSubscribeV2 -> data.id)
-    let order_id = AlorRust::ws_order_status_id(&ws_create_evt)
-        .or_else(|| AlorRust::cws_order_number(&create_ack))
-        .ok_or_else(|| anyhow!("No order id in WS status event or CWS ack"))?;
+    let order_id = create_result.order_id;
     info!("Order id (source-of-truth WS): {}", order_id);
 
     // delete (smoke test)
-    let delete_guid = client
-        .cws_client
-        .delete_limit_order(&order_id, &exchange, &portfolio, Some(true))
-        .await?;
-    let delete_ack = AlorRust::wait_cws_event_by_request_guid(
-        &mut cws_rx,
-        &delete_guid,
-        Duration::from_secs(5),
-    )
-    .await
-    .map_err(|e| anyhow!(e.to_string()))?;
+    let delete_result = client
+        .delete_limit_order_and_wait_status(
+            &mut cws_rx,
+            &mut ws_rx,
+            &order_id,
+            &exchange,
+            &portfolio,
+            Some(true),
+            Duration::from_secs(5),
+        )
+        .await
+        .map_err(|e| anyhow!(e.to_string()))?;
+    let delete_ack = delete_result.cws_ack.clone();
     info!("CWS delete ack: {}", delete_ack);
 
-    let ws_delete_evt = wait_order_status_event(
-        &mut ws_rx,
-        &subscribe_guid_s,
-        &portfolio,
-        &symbol,
-        Some(&order_id),
-        Duration::from_secs(5),
-    )
-    .await?;
+    let ws_delete_evt = delete_result.ws_status_event.clone();
     info!("WS delete status event: {}", ws_delete_evt);
 
     if let Some(status) = ws_status(&ws_delete_evt) {
@@ -122,57 +103,6 @@ async fn main() -> Result<()> {
     }
 
     Ok(())
-}
-
-async fn wait_order_status_event(
-    rx: &mut broadcast::Receiver<Value>,
-    subscribe_guid: &str,
-    portfolio: &str,
-    symbol: &str,
-    order_id: Option<&str>,
-    timeout_duration: Duration,
-) -> Result<Value> {
-    let fut = async {
-        loop {
-            match rx.recv().await {
-                Ok(event) => {
-                    if AlorRust::ws_event_guid(&event).as_deref() != Some(subscribe_guid) {
-                        continue;
-                    }
-
-                    let data = match event.get("data") {
-                        Some(d) => d,
-                        None => continue,
-                    };
-
-                    let ev_portfolio = data.get("portfolio").and_then(|v| v.as_str());
-                    let ev_symbol = data.get("symbol").and_then(|v| v.as_str());
-                    if ev_portfolio != Some(portfolio) || ev_symbol != Some(symbol) {
-                        continue;
-                    }
-
-                    if let Some(expected_id) = order_id {
-                        if AlorRust::ws_order_status_id(&event).as_deref() != Some(expected_id) {
-                            continue;
-                        }
-                    }
-
-                    return Ok(event);
-                }
-                Err(broadcast::error::RecvError::Lagged(n)) => {
-                    warn!("WS receiver lagged by {} events", n);
-                    continue;
-                }
-                Err(broadcast::error::RecvError::Closed) => {
-                    return Err(anyhow!("WS broadcast stream closed"));
-                }
-            }
-        }
-    };
-
-    tokio::time::timeout(timeout_duration, fut)
-        .await
-        .map_err(|_| anyhow!("Timeout waiting for order status event"))?
 }
 
 fn ws_status(event: &Value) -> Option<String> {

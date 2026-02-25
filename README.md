@@ -86,7 +86,7 @@ let mut client = AlorRust::new(
 
 Эти методы сейчас возвращают `Result<String>`, где строка - это `requestGuid` (GUID запроса), а не ответ сервера и не `orderNumber`.
 
-То есть сценарий "создать заявку -> получить идентификатор заявки (`orderNumber`/`data.id`) через `OrdersGetAndSubscribeV2` -> изменить/удалить" пока не оформлен как удобный публичный API.
+Полностью типизированный сценарий "create/update/delete + wait statuses" пока не завершен, но уже есть первый helper высокого уровня для create-flow: `create_limit_order_and_wait_status_id(...)`.
 
 ### Что уже добавлено для нормального сценария (event streams)
 
@@ -100,6 +100,9 @@ let mut client = AlorRust::new(
 - `wait_cws_event_by_request_guid(...)`
 - `wait_ws_event_by_guid(...)`
 - `wait_ws_order_status_by_id(...)`
+- `wait_ws_order_status_event(...)`
+- `create_limit_order_and_wait_status_id(...)`
+- `delete_limit_order_and_wait_status(...)`
 - `cws_request_guid(...)`
 - `cws_order_number(...)`
 - `ws_order_status_id(...)`
@@ -108,7 +111,7 @@ let mut client = AlorRust::new(
 
 ## Примеры (`examples/`)
 
-В каталоге есть 3 примера:
+В каталоге сейчас несколько примеров (включая экспериментальные/live smoke):
 
 1. `examples/cws_example.rs`
 - большой демонстрационный сценарий create/update/delete для разных типов заявок;
@@ -121,6 +124,10 @@ let mut client = AlorRust::new(
 3. `examples/cws_example_2.rs`
 - упрощенный сценарий для limit order;
 - использует фиктивный `order_number = "10"` и поэтому не является полноценным рабочим примером.
+
+4. `examples/cws_example_5.rs`
+- live smoke test на новом event-driven API (`subscribe_ws_events`, `subscribe_cws_events`);
+- подтверждает сценарий create -> WS `data.id` -> delete через `OrdersGetAndSubscribeV2`.
 
 ## Конфигурация и переменные окружения
 
