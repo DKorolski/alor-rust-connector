@@ -108,7 +108,10 @@ impl AuthClient {
             // todo: remove raw_response and add validate response;
             let response_text = response.text().await?;
             let response_json: Value = serde_json::from_str(&*response_text)?;
-            let token = response_json["AccessToken"].as_str().unwrap().to_string();
+            let token = response_json["AccessToken"]
+                .as_str()
+                .ok_or_else(|| anyhow!("AccessToken missing in refresh response"))?
+                .to_string();
             self.token_data.raw_response = Some(response_text);
             self.token_data.token = Some(token.clone());
             self.token_data.token_decoded = Some(self.decode_token(token)?);
@@ -133,7 +136,10 @@ impl AuthClient {
     fn decode_token(&self, token: String) -> Result<Value> {
         let token_split = token.split(".");
 
-        let token_data = token_split.skip(1).next().unwrap();
+        let token_data = token_split
+            .skip(1)
+            .next()
+            .ok_or_else(|| anyhow!("Invalid JWT format: payload part missing"))?;
         let data_string = Self::decode_base64_with_padding(token_data)?;
 
         Ok(serde_json::from_str(&data_string)?)
@@ -142,19 +148,22 @@ impl AuthClient {
     fn parse_data_from_token(&mut self) {
         let portfolio_number = env::var("PORTFOLIO_NUMBER").ok();
 
-        let token_data = self.token_data.token_decoded.clone().unwrap();
+        let Some(token_data) = self.token_data.token_decoded.clone() else {
+            warn!("token_decoded is empty, skip parse_data_from_token");
+            return;
+        };
         self.user_data.accounts.clear();
 
-        let all_agreements = token_data["agreements"]
-            .as_str()
-            .unwrap()
-            .split(" ")
-            .collect::<Vec<&str>>();
-        let all_portfolios = token_data["portfolios"]
-            .as_str()
-            .unwrap()
-            .split(" ")
-            .collect::<Vec<&str>>();
+        let Some(agreements_str) = token_data["agreements"].as_str() else {
+            warn!("JWT token has no agreements field");
+            return;
+        };
+        let Some(portfolios_str) = token_data["portfolios"].as_str() else {
+            warn!("JWT token has no portfolios field");
+            return;
+        };
+        let all_agreements = agreements_str.split(" ").collect::<Vec<&str>>();
+        let all_portfolios = portfolios_str.split(" ").collect::<Vec<&str>>();
 
         let mut portfolio_id = 0;
         for (account_id, agreement) in all_agreements.iter().enumerate() {

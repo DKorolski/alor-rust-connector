@@ -5,10 +5,9 @@ use futures_util::SinkExt;
 use log::{debug, info};
 use reqwest::header::{HeaderMap, HeaderValue};
 use reqwest::Url;
-use serde_json::{Error, Number, Value};
+use serde_json::{Number, Value};
 use std::error::Error as StdError;
 use std::io;
-use std::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio::sync::broadcast;
 use tokio::time::{timeout, Duration};
@@ -96,32 +95,40 @@ impl AlorRust {
             cws_client: CWS::new(refresh_token, demo, cws_callback).await?,
         };
 
-        api.auth_client.get_jwt_token().await.unwrap();
+        api.auth_client
+            .get_jwt_token()
+            .await
+            .map_err(|e| anyhow!(e.to_string()))?;
 
         Ok(api)
     }
 
     // internal
 
-    async fn get_headers_vec(&mut self) -> HeaderMap {
-        let data_json: Value =
-            serde_json::from_str(self.auth_client.get_jwt_token().await.unwrap().as_str()).unwrap();
+    async fn get_headers_vec(&mut self) -> anyhow::Result<HeaderMap> {
+        let jwt_raw = self
+            .auth_client
+            .get_jwt_token()
+            .await
+            .map_err(|e| anyhow!(e.to_string()))?;
+        let data_json: Value = serde_json::from_str(jwt_raw.as_str())?;
 
         let mut headers = HeaderMap::new();
 
         headers.insert(
             "Content-Type",
-            HeaderValue::from_str("application/json").unwrap(),
+            HeaderValue::from_str("application/json")?,
         );
+        let access_token = data_json
+            .get("AccessToken")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow!("AccessToken missing in JWT response"))?;
         headers.insert(
             "Authorization",
-            HeaderValue::from_str(
-                format!("Bearer {}", data_json["AccessToken"].as_str().unwrap()).as_str(),
-            )
-            .unwrap(),
+            HeaderValue::from_str(format!("Bearer {}", access_token).as_str())?,
         );
 
-        headers
+        Ok(headers)
     }
 
     async fn get_symbol_info_internal(
@@ -137,9 +144,9 @@ impl AlorRust {
             .is_none()
             || reload
         {
-            self.get_symbol(exchange, symbol, None, "Simple")
-                .await
-                .unwrap();
+            if self.get_symbol(exchange, symbol, None, "Simple").await.is_err() {
+                return None;
+            }
         }
 
         self.auth_client
@@ -186,7 +193,7 @@ impl AlorRust {
         headers: HeaderMap,
         client: reqwest::Client,
         url: Url,
-    ) -> HistoryDataResponse {
+    ) -> anyhow::Result<HistoryDataResponse> {
         let response = client
             .get(url)
             .headers(headers)
@@ -200,13 +207,12 @@ impl AlorRust {
                 ("format", format),
             ])
             .send()
-            .await
-            .unwrap();
+            .await?;
 
         if response.status().is_success() {
-            response.json::<HistoryDataResponse>().await.unwrap()
+            Ok(response.json::<HistoryDataResponse>().await?)
         } else {
-            panic!("{:?}", response.text().await.unwrap());
+            Err(anyhow!(response.text().await.unwrap_or_else(|_| "history request failed".to_string())))
         }
     }
 
@@ -228,16 +234,16 @@ impl AlorRust {
                 self.client
                     .api_server
                     .join(format!("/md/v2/Clients/{}/{}/positions", exchange, portfolio).as_str())
-                    .unwrap(),
+                    ?,
             )
-            .headers(self.get_headers_vec().await)
+            .headers(self.get_headers_vec().await?)
             .query(&vec![
                 ("withoutCurrency", without_currency.to_string().as_str()),
                 ("format", format),
             ])
             .send()
             .await;
-        let response_json = self.client.validate_response(response.unwrap()).await?;
+        let response_json = self.client.validate_response(response?).await?;
 
         Ok(response_json)
     }
@@ -272,10 +278,10 @@ impl AlorRust {
         let symbol_string = symbol.to_string();
         let format_string = format.to_string();
         let client = reqwest::Client::new();
-        let url = self.client.api_server.join("/md/v2/history").unwrap();
-        let headers = self.get_headers_vec().await;
-
-        let (tx, rx) = mpsc::channel();
+        let url = self.client.api_server.join("/md/v2/history")?;
+        let headers = self.get_headers_vec().await.map_err(|e| -> Box<dyn StdError> {
+            Box::new(io::Error::new(io::ErrorKind::Other, e.to_string()))
+        })?;
 
         let mut result_data = HistoryDataResponse {
             history: vec![],
@@ -306,8 +312,9 @@ impl AlorRust {
                 url.clone(),
             )
             .await
+            .map_err(anyhow::Error::msg)?
             .next
-            .unwrap();
+            .ok_or_else(|| anyhow!("No next history cursor"))?;
 
             correct_to = AlorRust::get_history_data_chunk(
                 exchange_string.as_str(),
@@ -323,11 +330,12 @@ impl AlorRust {
                 url.clone(),
             )
             .await
+            .map_err(anyhow::Error::msg)?
             .prev
-            .unwrap();
+            .ok_or_else(|| anyhow!("No prev history cursor"))?;
         }
 
-        let mut tasks: Vec<JoinHandle<Result<HistoryDataResponse, Error>>> = Vec::new();
+        let mut tasks: Vec<JoinHandle<anyhow::Result<HistoryDataResponse>>> = Vec::new();
         loop {
             let exchange_string_copy = exchange_string.clone();
             let symbol_string_copy = symbol_string.clone();
@@ -350,7 +358,7 @@ impl AlorRust {
                     cloned_client.clone(),
                     cloned_url.clone(),
                 )
-                .await;
+                .await?;
 
                 Ok(data)
             }));
@@ -362,14 +370,14 @@ impl AlorRust {
         }
 
         for task in tasks {
-            let mut result = task.await.unwrap().unwrap();
+            let mut result = task
+                .await
+                .map_err(anyhow::Error::msg)?
+                .map_err(anyhow::Error::msg)?;
 
             result_data.history.append(&mut result.history);
         }
         result_data.remove_duplicate_histories();
-        tx.send(result_data).unwrap();
-
-        let result_data = rx.recv().unwrap();
 
         Ok(serde_json::to_value(result_data)?)
     }
@@ -404,15 +412,20 @@ impl AlorRust {
                 self.client
                     .api_server
                     .join(format!("/md/v2/Securities/{}/{}", exchange, symbol).as_str())
-                    .unwrap(),
+                    ?,
             )
-            .headers(self.get_headers_vec().await)
+            .headers(self.get_headers_vec().await.map_err(|e| -> Box<dyn StdError> {
+                Box::new(io::Error::new(io::ErrorKind::Other, e.to_string()))
+            })?)
             .query(&params.clone())
             .send()
             .await;
-        let mut response_json = self.client.validate_response(response.unwrap()).await?;
+        let mut response_json = self.client.validate_response(response?).await?;
 
-        let decimals = ((1.0 / response_json["minstep"].as_f64().unwrap()).log10() + 0.99) as i64;
+        let minstep = response_json["minstep"]
+            .as_f64()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "minstep missing or invalid"))?;
+        let decimals = ((1.0 / minstep).log10() + 0.99) as i64;
         response_json["decimals"] = Value::Number(Number::from(decimals));
 
         self.auth_client
@@ -451,13 +464,17 @@ impl AlorRust {
         let response = self
             .client
             .client
-            .get(self.client.api_server.join("/md/v2/time").unwrap())
-            .headers(self.get_headers_vec().await)
+            .get(self.client.api_server.join("/md/v2/time")?)
+            .headers(self.get_headers_vec().await.map_err(|e| -> Box<dyn StdError> {
+                Box::new(io::Error::new(io::ErrorKind::Other, e.to_string()))
+            })?)
             .send()
             .await;
-        let response_json = self.client.validate_response(response.unwrap()).await?;
+        let response_json = self.client.validate_response(response?).await?;
 
-        Ok(response_json.as_u64().unwrap())
+        response_json
+            .as_u64()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "server time is not u64").into())
     }
 
     // websocket methods
@@ -1039,7 +1056,7 @@ impl AlorRust {
             board = self
                 .find_symbol_in_exchange(symbol.as_str())
                 .await
-                .unwrap()
+                .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "Symbol not found in known exchanges"))?
                 .to_string();
         }
 
@@ -1071,7 +1088,9 @@ impl AlorRust {
         }
         let exchange = self.find_exchange_by_symbol(using_board.as_str(), symbol);
 
-        Ok(exchange.await.unwrap())
+        exchange
+            .await
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "Exchange not found for board/symbol").into())
     }
 
     pub fn utc_timestamp_to_msk_datetime(
@@ -1079,7 +1098,8 @@ impl AlorRust {
         timestamp: i64,
     ) -> Result<DateTime<Utc>, Box<dyn StdError>> {
         // Convert Unix timestamp to Utc DateTime
-        Ok(DateTime::from_timestamp(timestamp, 0).unwrap())
+        DateTime::from_timestamp(timestamp, 0)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "Invalid unix timestamp").into())
     }
 
     /// msk_datetime_to_utc_timestamp(date)
@@ -1118,7 +1138,7 @@ impl AlorRust {
         let mut result = vec![];
 
         for account in self.auth_client.user_data.accounts.iter() {
-            let _ = result.push(serde_json::to_value(account).unwrap());
+            result.push(serde_json::to_value(account)?);
         }
 
         Ok(result)
