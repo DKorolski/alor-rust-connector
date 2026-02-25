@@ -135,18 +135,11 @@ async fn main() -> Result<()> {
     let ws_delete_evt = delete_result.ws_status_event.clone();
     info!("WS delete status event: {}", ws_delete_evt);
 
-    if let Some(status) = ws_status(&ws_delete_evt) {
+    if let Some(status) = ws_delete_evt.status.clone() {
         info!("Delete status: {}", status);
     }
 
     Ok(())
-}
-
-fn ws_status(event: &Value) -> Option<String> {
-    event.get("data")
-        .and_then(|d| d.get("status"))
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string())
 }
 
 async fn wait_ws_subscribe_ack(

@@ -15,6 +15,7 @@ use tokio_tungstenite::tungstenite::Utf8Bytes;
 
 pub mod dto {
     pub mod cws_dto;
+    pub mod events;
 }
 
 mod helpers {
@@ -43,6 +44,7 @@ use structs::api_client::*;
 use structs::history_data::*;
 use uuid::Uuid;
 use structs::auth_client::AuthClient;
+pub use dto::events::{CwsAckEvent, WsOrderStatusEvent};
 
 use anyhow::{anyhow, Result};
 
@@ -56,25 +58,25 @@ pub struct AlorRust {
 #[derive(Debug, Clone)]
 pub struct CreateLimitOrderFlowResult {
     pub request_guid: String,
-    pub cws_ack: Value,
-    pub ws_status_event: Value,
+    pub cws_ack: CwsAckEvent,
+    pub ws_status_event: WsOrderStatusEvent,
     pub order_id: String,
 }
 
 #[derive(Debug, Clone)]
 pub struct DeleteLimitOrderFlowResult {
     pub request_guid: String,
-    pub cws_ack: Value,
-    pub ws_status_event: Value,
+    pub cws_ack: CwsAckEvent,
+    pub ws_status_event: WsOrderStatusEvent,
     pub order_id: String,
 }
 
 #[derive(Debug, Clone)]
 pub struct UpdateLimitOrderFlowResult {
     pub request_guid: String,
-    pub cws_ack: Value,
-    pub old_order_status_event: Option<Value>,
-    pub new_order_status_event: Value,
+    pub cws_ack: CwsAckEvent,
+    pub old_order_status_event: Option<WsOrderStatusEvent>,
+    pub new_order_status_event: WsOrderStatusEvent,
     pub old_order_id: String,
     pub new_order_id: String,
 }
@@ -623,6 +625,19 @@ impl AlorRust {
         event.get("httpCode").and_then(|v| v.as_u64())
     }
 
+    pub fn parse_cws_ack_event(event: Value) -> CwsAckEvent {
+        CwsAckEvent {
+            http_code: Self::cws_http_code(&event),
+            message: event
+                .get("message")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string()),
+            request_guid: Self::cws_request_guid(&event),
+            order_number: Self::cws_order_number(&event),
+            raw: event,
+        }
+    }
+
     pub fn ws_event_guid(event: &Value) -> Option<String> {
         event
             .get("guid")
@@ -648,6 +663,24 @@ impl AlorRust {
             .and_then(|d| d.get("status"))
             .and_then(|v| v.as_str())
             .map(|s| s.to_lowercase())
+    }
+
+    pub fn parse_ws_order_status_event(event: Value) -> WsOrderStatusEvent {
+        let data = event.get("data");
+        WsOrderStatusEvent {
+            guid: Self::ws_event_guid(&event),
+            order_id: Self::ws_order_status_id(&event),
+            status: Self::ws_order_status(&event),
+            portfolio: data
+                .and_then(|d| d.get("portfolio"))
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string()),
+            symbol: data
+                .and_then(|d| d.get("symbol"))
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string()),
+            raw: event,
+        }
     }
 
     pub async fn wait_cws_event_by_request_guid(
@@ -843,16 +876,17 @@ impl AlorRust {
             )
             .await?;
 
-        let cws_ack =
+        let cws_ack_raw =
             Self::wait_cws_event_by_request_guid(cws_rx, &request_guid, timeout_duration).await?;
+        let cws_ack = Self::parse_cws_ack_event(cws_ack_raw);
 
-        if let Some(code) = Self::cws_http_code(&cws_ack) {
+        if let Some(code) = cws_ack.http_code {
             if code != 200 {
                 return Err(anyhow!("create_limit_order failed, cws ack: {}", cws_ack));
             }
         }
 
-        let ws_status_event = if let Some(order_id) = Self::cws_order_number(&cws_ack) {
+        let ws_status_event_raw = if let Some(order_id) = cws_ack.order_number.clone() {
             Self::wait_ws_order_status_by_id(ws_rx, &order_id, timeout_duration).await?
         } else {
             Self::wait_ws_order_status_event(
@@ -865,9 +899,12 @@ impl AlorRust {
             .await
             .map_err(|e| anyhow!("No order id in CWS ack and WS status not received. cws ack: {} ; err: {}", cws_ack, e))?
         };
+        let ws_status_event = Self::parse_ws_order_status_event(ws_status_event_raw);
 
-        let order_id = Self::ws_order_status_id(&ws_status_event)
-            .or_else(|| Self::cws_order_number(&cws_ack))
+        let order_id = ws_status_event
+            .order_id
+            .clone()
+            .or_else(|| cws_ack.order_number.clone())
             .ok_or_else(|| anyhow!("No order id in WS status event or CWS ack"))?;
 
         Ok(CreateLimitOrderFlowResult {
@@ -893,20 +930,24 @@ impl AlorRust {
             .delete_limit_order(order_id, exchange, portfolio, check_duplicates)
             .await?;
 
-        let cws_ack =
+        let cws_ack_raw =
             Self::wait_cws_event_by_request_guid(cws_rx, &request_guid, timeout_duration).await?;
+        let cws_ack = Self::parse_cws_ack_event(cws_ack_raw);
 
-        if let Some(code) = Self::cws_http_code(&cws_ack) {
+        if let Some(code) = cws_ack.http_code {
             if code != 200 {
                 return Err(anyhow!("delete_limit_order failed, cws ack: {}", cws_ack));
             }
         }
 
-        let ws_status_event =
-            Self::wait_ws_order_status_by_id(ws_rx, order_id, timeout_duration).await?;
+        let ws_status_event = Self::parse_ws_order_status_event(
+            Self::wait_ws_order_status_by_id(ws_rx, order_id, timeout_duration).await?,
+        );
 
-        let resolved_order_id = Self::ws_order_status_id(&ws_status_event)
-            .or_else(|| Self::cws_order_number(&cws_ack))
+        let resolved_order_id = ws_status_event
+            .order_id
+            .clone()
+            .or_else(|| cws_ack.order_number.clone())
             .unwrap_or_else(|| order_id.to_string());
 
         Ok(DeleteLimitOrderFlowResult {
@@ -955,16 +996,17 @@ impl AlorRust {
             )
             .await?;
 
-        let cws_ack =
+        let cws_ack_raw =
             Self::wait_cws_event_by_request_guid(cws_rx, &request_guid, timeout_duration).await?;
+        let cws_ack = Self::parse_cws_ack_event(cws_ack_raw);
 
-        if let Some(code) = Self::cws_http_code(&cws_ack) {
+        if let Some(code) = cws_ack.http_code {
             if code != 200 {
                 return Err(anyhow!("update_limit_order failed, cws ack: {}", cws_ack));
             }
         }
 
-        let ack_order_id = Self::cws_order_number(&cws_ack);
+        let ack_order_id = cws_ack.order_number.clone();
 
         // На некоторых рынках update реализуется как cancel old + create new.
         // Если сервер вернул новый order id и он отличается, ждём две WS записи:
@@ -978,11 +1020,13 @@ impl AlorRust {
                     |s| s == "canceled" || s == "cancelled",
                 )
                 .await
-                .ok();
+                .ok()
+                .map(Self::parse_ws_order_status_event);
 
-                let new_order_status_event =
+                let new_order_status_event = Self::parse_ws_order_status_event(
                     Self::wait_ws_order_status_by_id(ws_rx, &new_order_id, timeout_duration)
-                        .await?;
+                        .await?,
+                );
 
                 return Ok(UpdateLimitOrderFlowResult {
                     request_guid,
@@ -996,7 +1040,7 @@ impl AlorRust {
         }
 
         // Fallback: либо id не изменился, либо в CWS ack id не пришёл.
-        let new_order_status_event = if let Some(same_id) = ack_order_id.clone() {
+        let new_order_status_event_raw = if let Some(same_id) = ack_order_id.clone() {
             Self::wait_ws_order_status_by_id(ws_rx, &same_id, timeout_duration).await?
         } else {
             Self::wait_ws_order_status_event(
@@ -1008,8 +1052,11 @@ impl AlorRust {
             )
             .await?
         };
+        let new_order_status_event = Self::parse_ws_order_status_event(new_order_status_event_raw);
 
-        let new_order_id = Self::ws_order_status_id(&new_order_status_event)
+        let new_order_id = new_order_status_event
+            .order_id
+            .clone()
             .or(ack_order_id)
             .unwrap_or_else(|| old_order_id.to_string());
 
